@@ -1,0 +1,4 @@
+protobuf
+numpy
+open3d
+a42_proto
