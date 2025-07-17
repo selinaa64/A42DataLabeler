@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 vis = o3d.visualization.Visualizer()
 vis.create_window(width=1920, height=1080)
 view_ctl = vis.get_view_control()
-parameters = o3d.io.read_pinhole_camera_parameters("/users/emil/Documents/HS_Esslingen/Studienprojekt/Testing/Frame_anim/ScreenCamera_2025-07-16-12-27-20.json") # hardcoded path to the JSON of the camera parameters
+parameters = o3d.io.read_pinhole_camera_parameters("/users/emil/Documents/HS_Esslingen/Studienprojekt/Visualization_Testing/Frame_anim/ScreenCamera_2025-07-16-12-27-20.json") # hardcoded path to the JSON of the camera parameters
 
 def read_length_delimited_frames(path):
     """Liest length-delimited protobuf Frames aus Datei."""
@@ -64,7 +64,7 @@ def pcl_to_pcd(pcl):
         colors = (colors - colors.min()) / (np.ptp(colors) + 1e-6)
         pcd.colors = o3d.utility.Vector3dVector(colors)
 
-    pcd = pcd.crop(create_lane_box())
+    # pcd = pcd.crop(create_lane_box())
     return pcd
 
 def visualize_pointcloud(pcl):
