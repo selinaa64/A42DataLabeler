@@ -1,4 +1,4 @@
-# !currently not quite working as inteded but midifies the pandas correctly!
+# !currently not quite working as inteded but modifies the pandas correctly!
 # checks lidar data and wim data to find the position of objects crossing the wim in 3d space
 # speed and position later used as starting values of the kalman filter
 import os
@@ -8,6 +8,7 @@ import struct
 import logging
 import numpy as np
 import pandas as pd
+import open3d as o3d
 from google.protobuf.message import DecodeError
 from a42.frame_pb2 import Frame
 
@@ -60,14 +61,42 @@ def get_minmax_lidar_timestamp():
     minmax_timestamp = np.array([min_timestamp, max_timestamp])
     return(minmax_timestamp)
 
-# should check for the first frame to have a later timestamp than the WIM data and thus be the first frame after detection
+# checks for the first frame to have a later timestamp than the WIM data and thus be the first frame after detection
 def get_detection_frame(timestamp):
     for frame_iterator, frame in enumerate(read_length_delimited_frames(FRAME_FILE)):
         if frame.frame_timestamp_ns >= timestamp:
             return frame_iterator
 
+def create_bounding_box(extent, center, plane_normal = None):
+    if plane_normal is not None:
+        rotation_matrix = normal_to_rotation_matrix(plane_normal)
+        return o3d.geometry.OrientedBoundingBox(center, rotation_matrix, extent)
+    else:
+        rotation_matrix = np.identity(3)
+        return o3d.geometry.OrientedBoundingBox(center, rotation_matrix, extent)
+
+def normal_to_rotation_matrix(normal_vector):
+    normal_vector = normal_vector / np.linalg.norm(normal_vector)
+    if abs(np.dot(normal_vector, [0, 1, 0])) < 0.999:
+        up = np.array([0, 1, 0])
+    else:
+        up = np.array([1, 0, 0])
+    
+    x_axis = np.cross(up, normal_vector)
+    x_axis /= np.linalg.norm(x_axis)
+    
+    y_axis = np.cross(normal_vector, x_axis)
+    
+    rotation_matrix = np.column_stack((x_axis, y_axis, normal_vector))
+    return rotation_matrix
+
+def is_point_in_box(point, box):
+    relative_point = np.dot(point - box.center, box.R)
+    max_extents = box.extent / 2.0
+    return np.all(np.abs(relative_point) <= max_extents)
+
 # used to get the postion (front center) of the object with the closest distance to the WIM's y position
-def get_closest_object_to_wim(frame_index):
+def get_closest_object_to_wim(frame_index, bounding_box):
     wim_position_y = 10.67 #!might be incorrect!
     smallest_distance = 100
     closest_object = np.array([-1,-1,-1])
@@ -75,11 +104,12 @@ def get_closest_object_to_wim(frame_index):
         if frame_iterator == frame_index:
             for scan_iterator, scan in enumerate(frame.lidars):
                 for object_iterator, obj in enumerate(scan.object_list.objects):
-                    front_of_object_y = obj.position.y - (obj.dimension.y/2)
-                    distance = np.abs(front_of_object_y-wim_position_y)
-                    if distance < smallest_distance:
-                        smallest_distance = distance
-                        closest_object = [obj.position.x, front_of_object_y, obj.position.z]
+                    if is_point_in_box(np.array([obj.position.x, obj.position.y, obj.position.y]), bounding_box):
+                        front_of_object_y = obj.position.y - (obj.dimension.y/2)
+                        distance = np.abs(front_of_object_y-wim_position_y)
+                        if distance < smallest_distance:
+                            smallest_distance = distance
+                            closest_object = [obj.position.x, front_of_object_y, obj.position.z]
             return closest_object
 
 
@@ -99,8 +129,10 @@ def main():
     
     wim_data = wim_data.sort_values(by='merge_unix_timestamp_ns')
 
-    wim_data['detection_frame'] = wim_data['merge_unix_timestamp_ns'].apply(get_detection_frame) #!there is either an issue here or with position of the bounding box!
-    wim_data['closest_object'] = wim_data['detection_frame'].apply(get_closest_object_to_wim) #!issue might also be related to the other lane!
+    lane_box = create_bounding_box(np.array([3.3,90,3.5]), np.array([0,0,1.88]), np.array([0.02212, -0.01383, 0.99966]))
+
+    wim_data['detection_frame'] = wim_data['merge_unix_timestamp_ns'].apply(get_detection_frame) # !this is likely a bit screwed because the objects seem to be very far away from the wim (and very close to the cutoff)!
+    wim_data['closest_object'] = wim_data['detection_frame'].apply(get_closest_object_to_wim, args=(lane_box,))
     
     print(wim_data[['detection_frame', 'closest_object']])
 
