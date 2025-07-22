@@ -8,7 +8,7 @@ LIDAR data dabeler for the A42 test track
 ## Checklist
 - [x] Basic visualization of single frames
 - [x] Basic visualization of a frame sequence
-- [ ] Lidar to WIM correspondence
+- [x] Lidar to WIM correspondence
 - [ ] Vehicle tracking from frame to frame
 - [ ] Output of object position(y-axis, front of vehicle) for each frame
 - [ ] DBSCAN for custom object detection
