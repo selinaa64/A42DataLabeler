@@ -96,7 +96,7 @@ def is_point_in_box(point, box):
     return np.all(np.abs(relative_point) <= max_extents)
 
 # used to get the postion (front center) of the object with the closest distance to the WIM's y position
-def get_closest_object_to_wim(frame_index, bounding_box):
+def get_closest_object_to_wim(frame_index):
     wim_position_y = 10.67 #!might be incorrect!
     smallest_distance = 100
     closest_object = np.array([-1,-1,-1])
@@ -104,12 +104,12 @@ def get_closest_object_to_wim(frame_index, bounding_box):
         if frame_iterator == frame_index:
             for scan_iterator, scan in enumerate(frame.lidars):
                 for object_iterator, obj in enumerate(scan.object_list.objects):
-                    if is_point_in_box(np.array([obj.position.x, obj.position.y, obj.position.y]), bounding_box):
-                        front_of_object_y = obj.position.y - (obj.dimension.y/2)
-                        distance = np.abs(front_of_object_y-wim_position_y)
-                        if distance < smallest_distance:
-                            smallest_distance = distance
-                            closest_object = [obj.position.x, front_of_object_y, obj.position.z]
+                    #if is_point_in_box(np.array([obj.position.x, obj.position.y, obj.position.y]), bounding_box):
+                    front_of_object_y = obj.position.y - (obj.dimension.y/2)
+                    distance = np.abs(front_of_object_y-wim_position_y)
+                    if distance < smallest_distance:
+                        smallest_distance = distance
+                        closest_object = [obj.position.x, front_of_object_y, obj.position.z]
             return closest_object
 
 
@@ -124,6 +124,14 @@ def main():
 
     wim_data['merge_unix_timestamp_ns'] = wim_data['merge_timestamp'].apply(datetime_to_unix_ns) # timestamp for easy processing
     wim_data['merge_unix_timestamp_ns'] = wim_data['merge_unix_timestamp_ns'] - 7_200_000_000_000 # utc+2 to utc (7.2 trillion seconds)
+
+    '''1752218382402629927 example frame where ther should be a detection
+       1752218383819644000 closest WIM detection <- 8 frames too late => ~ 1.41 second offset'''
+       
+    #!experiment!
+    wim_data['merge_unix_timestamp_ns'] = wim_data['merge_unix_timestamp_ns'] - 1_410_000_000  # 1.41 seconds
+    #!experiment!
+
     minmax_timestamp = get_minmax_lidar_timestamp() 
     wim_data = wim_data[(wim_data['merge_unix_timestamp_ns'] >= minmax_timestamp[0]) & (wim_data['merge_unix_timestamp_ns'] <= minmax_timestamp[1])] #only look at the time of lidar frames
     
@@ -131,12 +139,12 @@ def main():
 
     lane_box = create_bounding_box(np.array([3.3,90,3.5]), np.array([0,0,1.88]), np.array([0.02212, -0.01383, 0.99966]))
 
-    wim_data['detection_frame'] = wim_data['merge_unix_timestamp_ns'].apply(get_detection_frame) # !this is likely a bit screwed because the objects seem to be very far away from the wim (and very close to the cutoff)!
-    wim_data['closest_object'] = wim_data['detection_frame'].apply(get_closest_object_to_wim, args=(lane_box,))
+    wim_data['detection_frame'] = wim_data['merge_unix_timestamp_ns'].apply(get_detection_frame) 
+    wim_data['closest_object'] = wim_data['detection_frame'].apply(get_closest_object_to_wim)
     
-    print(wim_data[['detection_frame', 'closest_object']])
+    print(wim_data[['detection_frame', 'merge_unix_timestamp_ns', 'closest_object']])
 
-        
+
 
 if __name__ == "__main__":
     main()
