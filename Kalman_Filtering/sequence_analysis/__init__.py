@@ -1,0 +1,2 @@
+from .sequence_analysis import get_period
+from .sequence_analysis import get_sequence_length

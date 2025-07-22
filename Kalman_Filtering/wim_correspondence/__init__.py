@@ -1,0 +1,1 @@
+from .wim_correspondence import get_wim_correspondence
