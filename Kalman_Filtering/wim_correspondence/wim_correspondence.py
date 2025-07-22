@@ -3,8 +3,12 @@
 # speed and position later used as starting values of the kalman filter
 from utils import FRAME_FILE
 from utils import read_length_delimited_frames
+from utils import create_lane_box
+from utils import is_point_in_box
+
 import pandas as pd
 import numpy as np
+import open3d as o3d
 
 def _datetime_to_unix_ns(datetime):
     return pd.to_datetime(datetime).value
@@ -32,19 +36,49 @@ def _get_detection_frame(timestamp):
 
 # used to get the postion (front center) of the object with the closest distance to the WIM's y position
 def _get_closest_object_to_wim(frame_index):
-    wim_position_y = 10.67 #!might be incorrect!
-    smallest_distance = 100
-    closest_object = np.array([-1,-1,-1])
+    wim_position_y = 10.67  # position of WIM sensor along Y axis
+    smallest_distance = float('inf')
+    closest_object = np.array([-1, -1, -1])
+
     for frame_iterator, frame in enumerate(read_length_delimited_frames(FRAME_FILE)):
-        if frame_iterator == frame_index:
-            for scan_iterator, scan in enumerate(frame.lidars):
-                for object_iterator, obj in enumerate(scan.object_list.objects):
-                    front_of_object_y = obj.position.y - (obj.dimension.y/2)
-                    distance = np.abs(front_of_object_y-wim_position_y)
-                    if distance < smallest_distance:
-                        smallest_distance = distance
-                        closest_object = [obj.position.x, front_of_object_y, obj.position.z]
-            return closest_object
+        if frame_iterator != frame_index:
+            continue
+
+        lane_box = create_lane_box(np.array([3.3, 90, 3.5]), np.array([0, 0, 1.88]))
+
+        for scan in frame.lidars:
+            # Fallback to DBSCAN
+            raw_points = np.array([[p.x, p.y, p.z] for p in scan.pointcloud.points])
+            filtered = [p for p in raw_points if is_point_in_box(p, lane_box)]
+
+            if not filtered:
+                continue
+
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(filtered)
+
+            labels = np.array(pcd.cluster_dbscan(eps=3, min_points=3, print_progress=False))
+            max_label = labels.max()
+
+            for i in range(max_label + 1):
+                cluster_indices = np.where(labels == i)[0]
+                cluster_points = np.asarray(pcd.points)[cluster_indices]
+
+                if cluster_points.shape[0] == 0:
+                    continue
+
+                aabb = o3d.geometry.AxisAlignedBoundingBox.create_from_points(o3d.utility.Vector3dVector(cluster_points))
+                front_y = aabb.get_min_bound()[1]
+                center_x = aabb.get_center()[0]
+                center_z = aabb.get_center()[2]
+                distance = abs(front_y - wim_position_y)
+
+                if distance < smallest_distance:
+                    smallest_distance = distance
+                    closest_object = np.array([center_x, front_y, center_z])
+        break
+
+    return closest_object
 
 
 def get_wim_correspondence(PATH):

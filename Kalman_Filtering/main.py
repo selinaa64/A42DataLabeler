@@ -9,6 +9,7 @@ from wim_correspondence import get_wim_correspondence
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+import open3d as o3d
 
 def main():
     '''[x] read lidar frames and extract period between frames'''
@@ -32,8 +33,42 @@ def main():
         y_positions = []
         for scan_iterator, scan in enumerate(frame.lidars):
             for object_iterator, obj in enumerate(scan.object_list.objects):
-                if is_point_in_box(np.array([obj.position.x, obj.position.y, obj.position.z]), create_lane_box(np.array([3.3,90,3.5]),np.array([0,0,1.88]))):
-                    y_positions.append(obj.position.y-(obj.dimension.y/2))
+                # Convert raw points to Open3D point cloud
+                raw_points = [[p.x, p.y, p.z] for p in scan.pointcloud.points]
+                lane_box = create_lane_box(np.array([3.3, 90, 3.5]), np.array([0, 0, 1.88]))
+                            
+                    # Filter raw points by box
+                filtered_points = [p for p in raw_points if is_point_in_box(np.array(p), lane_box)]
+                if len(filtered_points) > 0:
+                    pcd = o3d.geometry.PointCloud()
+                    pcd.points = o3d.utility.Vector3dVector(filtered_points)
+
+                    labels = np.array(pcd.cluster_dbscan(eps=3, min_points=5, print_progress=False))
+                    max_label = labels.max()
+
+                    for i in range(max_label + 1):
+                        cluster_indices = np.where(labels == i)[0]
+                        cluster_points = np.asarray(pcd.points)[cluster_indices]
+
+                        if cluster_points.shape[0] == 0:
+                            continue
+
+                        cluster_pcd = o3d.geometry.PointCloud()
+                        cluster_pcd.points = o3d.utility.Vector3dVector(cluster_points)
+
+                        aabb = cluster_pcd.get_axis_aligned_bounding_box()
+
+                        center = aabb.get_center() 
+                        extent = aabb.get_extent()  
+
+                        '''todo: store these'''
+                        width_x = extent[0]
+                        length_y = extent[1]
+                        height_z = extent[2]
+
+                        front_y = aabb.get_min_bound()[1]
+                        y_positions.append(front_y)
+
         lidar_data.append(y_positions)
                 
 
@@ -47,17 +82,21 @@ def main():
     # Kalman filter setup
     Ad = np.array([[1, T],
                 [0, 1]])
+    Ad_rev = np.array([[1, -T], 
+                    [0, 1]])
 
     Gd = np.array([[T],
                 [1]])
+    Gd_rev = np.array([[-T],
+                    [1]])
 
-    Q = (1 / 3.6)**2 # to be changed
+    Q = (5 / 3.6)**2 # to be changed
 
     C = np.array([[1, 0]])
 
-    R = 0.3**2 # to be changed
+    R = 0.2**2 # to be changed
 
-    distance_thresh = 1.5 # to be changed
+    distance_thresh = 0.5 # to be changed
 
     # initial state
     P_dach = np.array([[5**2, 0],
@@ -83,6 +122,45 @@ def main():
                             
         y_filtered = []
         v_filtered = []
+        y_filtered_backward = []
+        v_filtered_backward = []
+        ### ---- Reverse Tracking ---- ###
+        x_dach_b = x_dach.copy()
+        P_dach_b = P_dach.copy()
+
+        for k in range(k_WIM - 1, -1, -1):
+            observations = lidar_data[k]
+            if not observations:
+                print(f"No LiDAR observations at timestep {k} (backward)")
+                obs = None
+                break
+
+            diffs = np.abs(np.array(observations) - x_dach_b[0, 0])
+            closest_index = np.argmin(diffs)
+            min_value = diffs[closest_index]
+
+            obs = np.array([[observations[closest_index]]]) if min_value < distance_thresh else None
+
+            # Correction
+            if obs is not None:
+                S = C @ P_dach_b @ C.T + R
+                K = P_dach_b @ C.T @ np.linalg.pinv(S)
+                x_tilde = x_dach_b + K @ (obs - C @ x_dach_b)
+                P_tilde = (np.eye(2) - K @ C) @ P_dach_b
+            else:
+                x_tilde = x_dach_b
+                P_tilde = P_dach_b
+
+            # Prediction (backward)
+            x_dach_b = Ad_rev @ x_tilde
+            P_dach_b = Ad_rev @ P_tilde @ Ad_rev.T + Gd_rev @ Gd_rev.T * Q
+
+            if x_dach_b[0, 0] > 25:
+                print(f"Tracking stopped at time step {k}, predicted position {x_dach[0, 0]:.3f} below threshold.")
+                break
+
+            y_filtered_backward.append(x_tilde[0, 0])
+            v_filtered_backward.append(x_tilde[1, 0])
 
         for k in range(k_WIM, N):
             # Data association
@@ -125,6 +203,8 @@ def main():
 
     # Plot filtered results
         plt.plot(np.arange(k_WIM, k_WIM + len(y_filtered)), y_filtered, 'rx-')
+        backward_timesteps = np.arange(k_WIM - len(y_filtered_backward) + 1, k_WIM+1)
+        plt.plot(backward_timesteps, y_filtered_backward[::-1], 'gx-')  # green line for backward tracking   
     plt.grid(True)
     plt.title('Kalman Filter Tracking')
     plt.xlabel('Time step')
