@@ -16,8 +16,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 LANE_BOX_DIMS = np.array([3.3, 90, 3.5])
 LANE_BOX_POS = np.array([0, 0, 1.88])
 Y_WIM_DEFAULT = 10.67
-DISTANCE_THRESH = 0.5
-Q = (5 / 3.6)**2  
+DISTANCE_THRESH = 3
+Q = (1 / 3.6)**2  
 R = 0.2**2       
 P_INIT = np.array([[5**2, 0],
                    [0, (10 / 3.6)**2]])
@@ -81,11 +81,11 @@ def kalman_track(lidar_data, x_init, P_init, start_frame, direction, N, T, Q, R,
     if direction == 'forward':
         Ad = np.array([[1, T], [0, 1]])
         Gd = np.array([[T], [1]])
-        frame_range = range(start_frame + 1, N)
+        frame_range = range(start_frame, N)
     elif direction == 'backward':
         Ad = np.array([[1, -T], [0, 1]])
         Gd = np.array([[-T], [1]])
-        frame_range = range(start_frame - 1, -1, -1)
+        frame_range = range(start_frame, -1, -1)
     else:
         raise ValueError("Direction must be 'forward' or 'backward'")
 
@@ -118,6 +118,9 @@ def kalman_track(lidar_data, x_init, P_init, start_frame, direction, N, T, Q, R,
             x_tilde = x
             P_tilde = P
 
+        print(P)
+        print("---")
+
         # prediction
         x = Ad @ x_tilde
         P = Ad @ P_tilde @ Ad.T + Gd @ Gd.T * Q
@@ -131,24 +134,6 @@ def kalman_track(lidar_data, x_init, P_init, start_frame, direction, N, T, Q, R,
         v_filtered.append(x_tilde[1, 0])
 
     return y_filtered, v_filtered
-
-def export_to_csv(filename, y_forward, v_forward, y_backward, v_backward, start_frame):
-    """
-    Exports filtered tracking results to a CSV file.
-    """
-    frames_forward = list(range(start_frame, start_frame + len(y_forward)))
-    frames_backward = list(range(start_frame - len(y_backward) + 1, start_frame + 1))[::-1]
-
-    data = {
-        'frame': frames_forward + frames_backward,
-        'position': y_forward + y_backward[::-1],
-        'velocity': v_forward + v_backward[::-1],
-        'direction': ['forward'] * len(y_forward) + ['backward'] * len(y_backward)
-    }
-
-    df = pd.DataFrame(data)
-    df.to_csv(filename, index=False)
-    logging.info(f"Exported filtered data to {filename}")
 
 def visualize(lidar_data, N, kalman_tracks):
     """
@@ -170,7 +155,7 @@ def visualize(lidar_data, N, kalman_tracks):
     # backward and forwad Kalman tracking
     for (start_frame, y_forward, y_backward) in kalman_tracks:
         plt.plot(range(start_frame, start_frame + len(y_forward)), y_forward, 'rx-')
-        backward_frames = range(start_frame + 1 - len(y_backward), start_frame + 1)
+        backward_frames = range(start_frame - len(y_backward)+ 1, start_frame+ 1)
         plt.plot(backward_frames, y_backward[::-1], 'gx-')
 
     # manual legend
@@ -221,9 +206,6 @@ def main():
         y_backward, v_backward = kalman_track(lidar_data, x_init, P_INIT, k_WIM, 'backward', N, T, Q, R, DISTANCE_THRESH)
 
         kalman_tracks.append((k_WIM, y_forward, y_backward))
-
-        # csv_filename = f'tracking_output_vehicle_{k_WIM}.csv'
-        # export_to_csv(csv_filename, y_forward, v_forward, y_backward, v_backward, k_WIM)
 
     visualize(lidar_data, N, kalman_tracks)
 
