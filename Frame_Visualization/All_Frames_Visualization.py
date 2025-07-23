@@ -8,7 +8,7 @@ import open3d as o3d
 from google.protobuf.message import DecodeError
 from a42.frame_pb2 import Frame
 
-FRAME_FILE = r"/users/emil/Documents/HS_Esslingen/Studienprojekt/Data/TestData1/all_frames.pb" # hardcoded custom path, change to where the protobuf file is strored
+FRAME_FILE = r"/users/emil/Documents/HS_Esslingen/Studienprojekt/Data/TestData2/no_objects_new.pb" # hardcoded custom path, change to where the protobuf file is strored
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
@@ -120,7 +120,7 @@ def main():
 
             visualize_pointcloud(scan.pointcloud.points)   
 
-            for object_iterator, obj in enumerate(scan.object_list.objects):
+            for object_iterator, obj in enumerate(scan.object_list):
                 if is_point_in_box(position_to_array(obj.position), create_lane_box()):
                     visualize_object_bounding_box(obj.pointcloud.points)
                 else:
@@ -129,7 +129,7 @@ def main():
         view_ctl.convert_from_pinhole_camera_parameters(parameters, allow_arbitrary=True)
         vis.poll_events()
         vis.update_renderer()
-        time.sleep(0.5)
+        time.sleep(0.1)
 
     vis.destroy_window()
 

@@ -12,29 +12,30 @@ from wim_correspondence import get_wim_correspondence
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Constants (should be dynamically changable, hardcoded right now)
+# Constants
 LANE_BOX_DIMS = np.array([3.3, 90, 3.5])
 LANE_BOX_POS = np.array([0, 0, 1.88])
 Y_WIM_DEFAULT = 10.67
 DISTANCE_THRESH = 3
-Q = (1 / 3.6)**2  
-R = 0.2**2       
+Q = (1 / 3.6)**2
+R = 0.2**2
 P_INIT = np.array([[5**2, 0],
                    [0, (10 / 3.6)**2]])
 
 def load_lidar_data():
     """
-    Reads frames from LiDAR data and extracts front positions (Y) of objects
-    filtered to the relevant lane.
-    
+    Reads frames from LiDAR data and extracts clusters with bounding boxes.
     Returns:
-        List of lists: each sublist contains Y positions for objects detected in that frame.
+        List of dicts: each frame has a timestamp and cluster list.
     """
     lane_box = create_lane_box(LANE_BOX_DIMS, LANE_BOX_POS)
     lidar_data = []
 
     for frame_idx, frame in enumerate(read_length_delimited_frames(FRAME_FILE)):
-        y_positions = []
+        frame_data = {
+            "timestamp_ns": frame.frame_timestamp_ns,
+            "clusters": []
+        }
         for scan in frame.lidars:
             raw_points = np.array([[p.x, p.y, p.z] for p in scan.pointcloud.points])
             filtered_points = [p for p in raw_points if is_point_in_box(np.array(p), lane_box)]
@@ -53,30 +54,22 @@ def load_lidar_data():
                     cluster_pcd = o3d.geometry.PointCloud()
                     cluster_pcd.points = o3d.utility.Vector3dVector(cluster_points)
                     aabb = cluster_pcd.get_axis_aligned_bounding_box()
-                    front_y = aabb.get_min_bound()[1]
-                    y_positions.append(front_y)
+                    frame_data["clusters"].append({
+                        "front_x": aabb.get_min_bound()[0],
+                        "front_y": aabb.get_min_bound()[1],
+                        "front_z": aabb.get_min_bound()[2],
+                        "extent_x": aabb.get_extent()[0],
+                        "extent_y": aabb.get_extent()[1],
+                        "extent_z": aabb.get_extent()[2]
+                    })
 
-        lidar_data.append(y_positions)
+        lidar_data.append(frame_data)
     return lidar_data
 
 def kalman_track(lidar_data, x_init, P_init, start_frame, direction, N, T, Q, R, distance_thresh):
     """
-    Generic Kalman tracking function for forward or backward tracking.
-    
-    Args:
-        lidar_data (list): List of observations per frame.
-        x_init (np.array): Initial state vector (2x1).
-        P_init (np.array): Initial covariance matrix (2x2).
-        start_frame (int): Frame index to start tracking.
-        direction (str): 'forward' or 'backward'.
-        N (int): Total number of frames.
-        T (float): Time step size.
-        Q (float): Process noise covariance.
-        R (float): Measurement noise covariance.
-        distance_thresh (float): Maximum acceptable distance for association.
-        
-    Returns:
-        Tuple of lists: filtered positions and velocities.
+    Kalman tracking with cluster association.
+    Returns positions, velocities, and chosen cluster info per frame.
     """
     if direction == 'forward':
         Ad = np.array([[1, T], [0, 1]])
@@ -85,7 +78,7 @@ def kalman_track(lidar_data, x_init, P_init, start_frame, direction, N, T, Q, R,
     elif direction == 'backward':
         Ad = np.array([[1, -T], [0, 1]])
         Gd = np.array([[-T], [1]])
-        frame_range = range(start_frame, -1, -1)
+        frame_range = range(start_frame, 0, -1)
     else:
         raise ValueError("Direction must be 'forward' or 'backward'")
 
@@ -93,20 +86,21 @@ def kalman_track(lidar_data, x_init, P_init, start_frame, direction, N, T, Q, R,
     x = x_init.copy()
     P = P_init.copy()
 
-    y_filtered = []
-    v_filtered = []
+    y_filtered, v_filtered, cluster_info = [], [], []
 
     for k in frame_range:
-        observations = lidar_data[k]
-        if not observations:
+        clusters = lidar_data[k].get("clusters", [])
+        if not clusters:
             logging.info(f"No LiDAR observations at timestep {k} ({direction})")
             break
 
-        diffs = np.abs(np.array(observations) - x[0, 0])
+        cluster_ys = [c["front_y"] for c in clusters]
+        diffs = np.abs(np.array(cluster_ys) - x[0, 0])
         closest_idx = np.argmin(diffs)
         min_dist = diffs[closest_idx]
 
-        obs = np.array([[observations[closest_idx]]]) if min_dist < distance_thresh else None
+        obs = np.array([[cluster_ys[closest_idx]]]) if min_dist < distance_thresh else None
+        chosen_cluster = clusters[closest_idx] if obs is not None else None
 
         # correction
         if obs is not None:
@@ -118,47 +112,86 @@ def kalman_track(lidar_data, x_init, P_init, start_frame, direction, N, T, Q, R,
             x_tilde = x
             P_tilde = P
 
-        print(P)
-        print("---")
-
         # prediction
         x = Ad @ x_tilde
         P = Ad @ P_tilde @ Ad.T + Gd @ Gd.T * Q
 
-        # stops tracking if prediction past optimal sensor range is made
+        # stop tracking out of range
         if (direction == 'forward' and x[0, 0] < 0.1) or (direction == 'backward' and x[0, 0] > 25):
             logging.info(f"Tracking stopped at timestep {k}, predicted position {x[0, 0]:.3f} ({direction})")
             break
 
         y_filtered.append(x_tilde[0, 0])
-        v_filtered.append(x_tilde[1, 0])
+        v_filtered.append(abs(x_tilde[1, 0]))  # absolute velocity
+        cluster_info.append((k, chosen_cluster))
 
-    return y_filtered, v_filtered
+    return y_filtered, v_filtered, cluster_info
+
+def export_track_to_rows(kalman_tracks, lidar_data, frame_file, object_id_start=1):
+    """
+    Convert tracked objects into CSV-friendly rows.
+    """
+    rows = []
+    obj_id = object_id_start
+
+    for (start_frame, y_forward, v_forward, forward_info,
+         y_backward, v_backward, backward_info, wim_row) in kalman_tracks:
+        full_info = backward_info[::-1] + forward_info
+        full_velocities = [v for v in v_backward[::-1]] + [v for v in v_forward]
+
+        max_length = max((c["extent_y"] for _, c in full_info if c), default=None)
+        max_width = max((c["extent_x"] for _, c in full_info if c), default=None)
+
+        for (frame_idx, cluster), vel in zip(full_info, full_velocities):
+            if cluster is None:
+                continue
+            timestamp = lidar_data[frame_idx]["timestamp_ns"]
+            rows.append({
+                'object_id': obj_id,
+                'frame': frame_idx,
+                'timestamp_ns': timestamp,
+                'front_x': cluster["front_x"],
+                'front_y': cluster["front_y"],
+                'front_z': cluster["front_z"],
+                'bbox_extent_x': cluster["extent_x"],
+                'bbox_extent_y': cluster["extent_y"],
+                'bbox_extent_z': cluster["extent_z"],
+                'max_length': max_length,
+                'max_width': max_width,
+                'axle_spaces_in_cm': wim_row['axle_spaces_in_cm'],
+                'axle_weights_in_kg': wim_row['axle_weights_in_kg'],
+                'total_weight_in_kg': wim_row['total_weight_in_kg'],
+                'initial_velocity': wim_row['speed_in_kmh'],
+                'velocity_in_ms': vel,
+                'vehicle_class': wim_row['class_id_8p1'],
+                'frame_file': frame_file
+            })
+        obj_id += 1
+    return rows
 
 def visualize(lidar_data, N, kalman_tracks):
     """
-    Visualizes raw observations and Kalman filter tracking.
-    
-    Args:
-        lidar_data (list): Raw observed y-positions per frame.
-        N (int): Total number of frames.
-        kalman_tracks (list): List of tuples containing (start_frame, y_forward, y_backward).
+    Visualizes LiDAR clusters and Kalman filter tracks.
     """
     plt.figure(figsize=(14, 7))
-    
-    # raw lidar data from dbscan
+
+    # Plot raw LiDAR clusters
     for k in range(N):
-        obs = lidar_data[k]
-        for pos in obs:
-            plt.plot(k, pos, 'bo', alpha=0.3)
+        for cluster in lidar_data[k].get("clusters", []):
+            plt.plot(k, cluster["front_y"], 'bo', alpha=0.3)
 
-    # backward and forwad Kalman tracking
-    for (start_frame, y_forward, y_backward) in kalman_tracks:
-        plt.plot(range(start_frame, start_frame + len(y_forward)), y_forward, 'rx-')
-        backward_frames = range(start_frame - len(y_backward)+ 1, start_frame+ 1)
-        plt.plot(backward_frames, y_backward[::-1], 'gx-')
+    # Plot tracks
+    for (start_frame, y_forward, v_forward, forward_info,
+         y_backward, v_backward, backward_info, wim_row) in kalman_tracks:
+        backward_frames = [fi for fi, c in backward_info[::-1] if c]
+        backward_positions = [c["front_y"] for _, c in backward_info[::-1] if c]
+        plt.plot(backward_frames, backward_positions, 'gx-')
 
-    # manual legend
+        forward_frames = [fi for fi, c in forward_info if c]
+        forward_positions = [c["front_y"] for _, c in forward_info if c]
+        plt.plot(forward_frames, forward_positions, 'rx-')
+
+    # Legend
     blue_dot = mlines.Line2D([], [], color='blue', marker='o', linestyle='None', label='LiDAR datapoints', alpha=0.3)
     red_cross = mlines.Line2D([], [], color='red', marker='x', linestyle='-', label='Forward Kalman track')
     green_cross = mlines.Line2D([], [], color='green', marker='x', linestyle='-', label='Backward Kalman track')
@@ -189,25 +222,30 @@ def main():
         y_WIM = Y_WIM_DEFAULT
 
         # Correct for missing LiDAR data in starting frame
-        if not lidar_data[k_WIM]:
+        if not lidar_data[k_WIM]["clusters"]:
             k_WIM += 1
             if k_WIM >= N:
                 logging.warning(f"No LiDAR data available near WIM detection frame {k_WIM}. Skipping...")
                 continue
 
         # Find closest object in detection frame
-        if lidar_data[k_WIM]:
-            distances = np.abs(np.array(lidar_data[k_WIM]) - y_WIM)
-            y_WIM = lidar_data[k_WIM][np.argmin(distances)]
+        if lidar_data[k_WIM]["clusters"]:
+            distances = np.abs(np.array([c["front_y"] for c in lidar_data[k_WIM]["clusters"]]) - y_WIM)
+            y_WIM = lidar_data[k_WIM]["clusters"][np.argmin(distances)]["front_y"]
 
         x_init = np.array([[y_WIM], [v_WIM]])
 
-        y_forward, v_forward = kalman_track(lidar_data, x_init, P_INIT, k_WIM, 'forward', N, T, Q, R, DISTANCE_THRESH)
-        y_backward, v_backward = kalman_track(lidar_data, x_init, P_INIT, k_WIM, 'backward', N, T, Q, R, DISTANCE_THRESH)
+        y_forward, v_forward, forward_info = kalman_track(lidar_data, x_init, P_INIT, k_WIM, 'forward', N, T, Q, R, DISTANCE_THRESH)
+        y_backward, v_backward, backward_info = kalman_track(lidar_data, x_init, P_INIT, k_WIM, 'backward', N, T, Q, R, DISTANCE_THRESH)
 
-        kalman_tracks.append((k_WIM, y_forward, y_backward))
+        kalman_tracks.append((k_WIM, y_forward, v_forward, forward_info,
+                              y_backward, v_backward, backward_info, row))
 
     visualize(lidar_data, N, kalman_tracks)
+
+    rows = export_track_to_rows(kalman_tracks, lidar_data, FRAME_FILE)
+    pd.DataFrame(rows).to_csv("tracked_objects.csv", index=False)
+    logging.info("Exported tracked objects to tracked_objects.csv")
 
 if __name__ == "__main__":
     main()
