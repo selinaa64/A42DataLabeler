@@ -1,7 +1,7 @@
 # !not sure if the offset is working as inteded but modifies the pandas correctly!
 # checks lidar data and wim data to find the position of objects crossing the wim in 3d space
 # speed and position later used as starting values of the kalman filter
-from utils import FRAME_FILE
+from config import FRAME_FILE
 from utils import read_length_delimited_frames
 from utils import create_lane_box
 from utils import is_point_in_box

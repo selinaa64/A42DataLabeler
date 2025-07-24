@@ -1,7 +1,7 @@
 import numpy as np
 import open3d as o3d
 from utils.read_frames import read_length_delimited_frames
-from utils.read_frames import FRAME_FILE
+from config import FRAME_FILE
 
 def _normal_to_rotation_matrix(vec):
     vec = vec / np.linalg.norm(vec)

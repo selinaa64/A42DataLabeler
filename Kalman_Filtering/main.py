@@ -6,21 +6,12 @@ import open3d as o3d
 import logging
 
 from sequence_analysis import get_period, get_sequence_length
-from utils import FRAME_FILE, read_length_delimited_frames, create_lane_box, is_point_in_box
+from utils import read_length_delimited_frames, create_lane_box, is_point_in_box
 from wim_correspondence import get_wim_correspondence
+from config import LANE_BOX_DIMS, LANE_BOX_POS, Y_WIM_DEFAULT, DISTANCE_THRESH, Q, R, P_INIT, WIM_FILE, FRAME_FILE
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# Constants
-LANE_BOX_DIMS = np.array([3.3, 90, 3.5])
-LANE_BOX_POS = np.array([0, 0, 1.88])
-Y_WIM_DEFAULT = 10.67
-DISTANCE_THRESH = 3
-Q = (1 / 3.6)**2
-R = 0.2**2
-P_INIT = np.array([[5**2, 0],
-                   [0, (10 / 3.6)**2]])
 
 def load_lidar_data():
     """
@@ -134,10 +125,9 @@ def export_track_to_rows(kalman_tracks, lidar_data, frame_file, object_id_start=
     rows = []
     obj_id = object_id_start
 
-    for (start_frame, y_forward, v_forward, forward_info,
-         y_backward, v_backward, backward_info, wim_row) in kalman_tracks:
-        full_info = backward_info[::-1] + forward_info
-        full_velocities = [v for v in v_backward[::-1]] + [v for v in v_forward]
+    for (start_frame, y_forward, v_forward, forward_info, y_backward, v_backward, backward_info, wim_row) in kalman_tracks:
+        full_info = backward_info[::-1] + forward_info[1:]# first frame is a duplicate => forward track frame gets dropped
+        full_velocities = v_backward[::-1] + v_forward[1:]
 
         max_length = max((c["extent_y"] for _, c in full_info if c), default=None)
         max_width = max((c["extent_x"] for _, c in full_info if c), default=None)
@@ -209,7 +199,7 @@ def main():
 
     T = get_period()
     N = get_sequence_length()
-    wim_data = get_wim_correspondence(r"/Users/emil/Documents/HS_Esslingen/Studienprojekt/Data/TestData1/data-1752218465752.csv")
+    wim_data = get_wim_correspondence(WIM_FILE)
     
     logging.info(f"Total frames: {N}")
     logging.info(f"Time between frames: {T:.3f} s")
@@ -238,14 +228,20 @@ def main():
         y_forward, v_forward, forward_info = kalman_track(lidar_data, x_init, P_INIT, k_WIM, 'forward', N, T, Q, R, DISTANCE_THRESH)
         y_backward, v_backward, backward_info = kalman_track(lidar_data, x_init, P_INIT, k_WIM, 'backward', N, T, Q, R, DISTANCE_THRESH)
 
+        # Filter out tracks with only one point
+        total_points = sum(c is not None for _, c in (backward_info[::-1] + forward_info))
+        if total_points <= 2:
+            logging.info(f"Skipping track at frame {k_WIM} (only {total_points} point detected)")
+            continue
+
         kalman_tracks.append((k_WIM, y_forward, v_forward, forward_info,
                               y_backward, v_backward, backward_info, row))
 
     visualize(lidar_data, N, kalman_tracks)
 
     rows = export_track_to_rows(kalman_tracks, lidar_data, FRAME_FILE)
-    pd.DataFrame(rows).to_csv("tracked_objects.csv", index=False)
-    logging.info("Exported tracked objects to tracked_objects.csv")
+    pd.DataFrame(rows).to_csv("tracked_objects_2.csv", index=False)
+    logging.info("Exported tracked objects to tracked_objects_2.csv")
 
 if __name__ == "__main__":
     main()

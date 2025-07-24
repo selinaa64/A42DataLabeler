@@ -1,5 +1,5 @@
 from utils import read_length_delimited_frames
-from utils import FRAME_FILE
+from config import FRAME_FILE
 import numpy as np
 
 def get_sequence_length():
