@@ -30,29 +30,40 @@ def load_lidar_data():
         for scan in frame.lidars:
             raw_points = np.array([[p.x, p.y, p.z] for p in scan.pointcloud.points])
             filtered_points = [p for p in raw_points if is_point_in_box(np.array(p), lane_box)]
-            
-            if filtered_points:
-                pcd = o3d.geometry.PointCloud()
-                pcd.points = o3d.utility.Vector3dVector(filtered_points)
-                labels = np.array(pcd.cluster_dbscan(eps=3, min_points=5, print_progress=False))
-                max_label = labels.max()
 
-                for cluster_id in range(max_label + 1):
-                    cluster_indices = np.where(labels == cluster_id)[0]
-                    cluster_points = np.asarray(pcd.points)[cluster_indices]
-                    if cluster_points.shape[0] == 0:
-                        continue
-                    cluster_pcd = o3d.geometry.PointCloud()
-                    cluster_pcd.points = o3d.utility.Vector3dVector(cluster_points)
-                    aabb = cluster_pcd.get_axis_aligned_bounding_box()
+            if len(scan.object_list) > 0:
+                for object_idx, obj in scan.object_list:
                     frame_data["clusters"].append({
-                        "front_x": aabb.get_min_bound()[0],
-                        "front_y": aabb.get_min_bound()[1],
-                        "front_z": aabb.get_min_bound()[2],
-                        "extent_x": aabb.get_extent()[0],
-                        "extent_y": aabb.get_extent()[1],
-                        "extent_z": aabb.get_extent()[2]
-                    })
+                                "front_x": obj.position.x,
+                                "front_y": obj.position.y-obj.dimension.y/2,
+                                "front_z": obj.position.z,
+                                "extent_x": obj.dimenstion.x,
+                                "extent_y": obj.dimension.y,
+                                "extent_z": obj.dimension.z
+                        })
+            else:
+                if filtered_points:
+                    pcd = o3d.geometry.PointCloud()
+                    pcd.points = o3d.utility.Vector3dVector(filtered_points)
+                    labels = np.array(pcd.cluster_dbscan(eps=3, min_points=5, print_progress=False))
+                    max_label = labels.max()
+
+                    for cluster_id in range(max_label + 1):
+                        cluster_indices = np.where(labels == cluster_id)[0]
+                        cluster_points = np.asarray(pcd.points)[cluster_indices]
+                        if cluster_points.shape[0] == 0:
+                            continue
+                        cluster_pcd = o3d.geometry.PointCloud()
+                        cluster_pcd.points = o3d.utility.Vector3dVector(cluster_points)
+                        aabb = cluster_pcd.get_axis_aligned_bounding_box()
+                        frame_data["clusters"].append({
+                            "front_x": aabb.get_min_bound()[0],
+                            "front_y": aabb.get_min_bound()[1],
+                            "front_z": aabb.get_min_bound()[2],
+                            "extent_x": aabb.get_extent()[0],
+                            "extent_y": aabb.get_extent()[1],
+                            "extent_z": aabb.get_extent()[2]
+                        })
 
         lidar_data.append(frame_data)
     return lidar_data
