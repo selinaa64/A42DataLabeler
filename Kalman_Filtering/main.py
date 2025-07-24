@@ -57,6 +57,49 @@ def load_lidar_data():
         lidar_data.append(frame_data)
     return lidar_data
 
+def merge_clusters(clusters, expected_length):
+    """
+    Merge fragmented clusters along Y-axis if they are within the expected vehicle length.
+    Returns a list of merged axis-aligned bounding boxes.
+    """
+    if not clusters:
+        return []
+    clusters = sorted(clusters, key=lambda c: c["front_y"])
+    merged = []
+    used = set()
+
+    for i, c in enumerate(clusters):
+        if i in used:
+            continue
+        min_x = c["front_x"]
+        max_x = c["front_x"] + c["extent_x"]
+        min_y = c["front_y"]
+        max_y = c["front_y"] + c["extent_y"]
+        min_z = c["front_z"]
+        max_z = c["front_z"] + c["extent_z"]
+
+        for j, c2 in enumerate(clusters[i+1:], start=i+1):
+            # Merge if within expected_length
+            if c2["front_y"] - min_y < expected_length:
+                used.add(j)
+                min_x = min(min_x, c2["front_x"])
+                max_x = max(max_x, c2["front_x"] + c2["extent_x"])
+                max_y = max(max_y, c2["front_y"] + c2["extent_y"])
+                min_z = min(min_z, c2["front_z"])
+                max_z = max(max_z, c2["front_z"] + c2["extent_z"])
+            else:
+                break
+
+        merged.append({
+            "front_x": min_x,
+            "front_y": min_y,
+            "front_z": min_z,
+            "extent_x": max_x - min_x,
+            "extent_y": max_y - min_y,
+            "extent_z": max_z - min_z
+        })
+    return merged
+
 def kalman_track(lidar_data, x_init, P_init, start_frame, direction, N, T, Q, R, distance_thresh):
     """
     Kalman tracking with cluster association.
@@ -139,7 +182,7 @@ def export_track_to_rows(kalman_tracks, lidar_data, frame_file, object_id_start=
             rows.append({
                 'object_id': obj_id,
                 'frame': frame_idx,
-                'timestamp_ns': timestamp,
+                'utc_timestamp_ns': timestamp,
                 'front_x': cluster["front_x"],
                 'front_y': cluster["front_y"],
                 'front_z': cluster["front_z"],
@@ -211,6 +254,9 @@ def main():
         v_WIM = -row['speed_in_kmh'] / 3.6  # Convert km/h to m/s and negate for direction
         y_WIM = Y_WIM_DEFAULT
 
+        axle_spaces = [float(a) for a in str(row['axle_spaces_in_cm']).split(';') if a]
+        vehicle_length = (sum(axle_spaces) / 100.0)  # in meters
+
         # Correct for missing LiDAR data in starting frame
         if not lidar_data[k_WIM]["clusters"]:
             k_WIM += 1
@@ -227,6 +273,12 @@ def main():
 
         y_forward, v_forward, forward_info = kalman_track(lidar_data, x_init, P_INIT, k_WIM, 'forward', N, T, Q, R, DISTANCE_THRESH)
         y_backward, v_backward, backward_info = kalman_track(lidar_data, x_init, P_INIT, k_WIM, 'backward', N, T, Q, R, DISTANCE_THRESH)
+
+        # Merge clusters dynamically for this vehicle for all frames in its track
+        for frame_idx, _ in (backward_info[::-1] + forward_info):
+            clusters = lidar_data[frame_idx].get("clusters", [])
+            if clusters:
+                lidar_data[frame_idx]["clusters"] = merge_clusters(clusters, vehicle_length)
 
         # Filter out tracks with only one point
         total_points = sum(c is not None for _, c in (backward_info[::-1] + forward_info))
