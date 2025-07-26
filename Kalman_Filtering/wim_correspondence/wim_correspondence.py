@@ -107,17 +107,15 @@ def get_wim_correspondence(PATH):
     """1752218382402629927 example frame where ther should be a detection
        1752218383819644000 closest WIM detection <- 8 frames too late => ~ 1.41 second offset"""
 
-    #!experiment!
     wim_data["merge_unix_timestamp_ns"] = (
         wim_data["merge_unix_timestamp_ns"] - 1_400_000_000
-    )  # 1.41 seconds
-    #!experiment!
+    )  # 1.4 seconds currently measured offset between the WIM timestamps and the Lidar Timestamps (subject to change, however works as of now)
 
     minmax_timestamp = _get_minmax_lidar_timestamp()
     wim_data = wim_data[
         (wim_data["merge_unix_timestamp_ns"] >= minmax_timestamp[0])
         & (wim_data["merge_unix_timestamp_ns"] <= minmax_timestamp[1])
-    ]  # only look at the time of lidar frames
+    ]  # only look at the timespan of the Lidar sequence
 
     wim_data = wim_data.sort_values(by="merge_unix_timestamp_ns")
 

@@ -1,3 +1,12 @@
+"""
+Script to read Lidar- and WIM-data and track objects over the entire frame sequence of the Lidar-data with the help of the initial WIM-based states and a Kalman filter.
+The priority datawise is being placed on the WIM => if there is no detection on the WIM, there will not be any tracking even if there are detected objects/clusters as tracking cannot occur without the initial states from the WIM.
+First returns a plot of the frame sequence and then the CSV with the data of the objects.
+Values regarding the Kalman filter and other constants can be changed in /config/config.py
+!Important!: The csv only exports AFTER the plot, so make sure to close the window of the plot or comment out the visualization.
+10 minutes of data take about 5 minutes on a m3 macbook with 24gb of ram, performance may vary.
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
@@ -28,9 +37,9 @@ logging.basicConfig(
 
 def load_lidar_data():
     """
-    Reads frames from LiDAR data and extracts clusters with bounding boxes.
+    Iterates over Lidar frames and either directly extracts object positions+dimensions or uses DBSCAN to extract object positions+dimensions.
     Returns:
-        List of dicts: each frame has a timestamp and cluster list.
+        List of dicts: Each frame has a timestamp and no/one/multiple objects/clusters with the associated information.
     """
     lane_box = create_lane_box(LANE_BOX_DIMS, LANE_BOX_POS)
     lidar_data = []
@@ -40,22 +49,29 @@ def load_lidar_data():
         for scan in frame.lidars:
             raw_points = np.array([[p.x, p.y, p.z] for p in scan.pointcloud.points])
             filtered_points = [
-                p for p in raw_points if is_point_in_box(np.array(p), lane_box)
+                p
+                for p in raw_points
+                if is_point_in_box(
+                    np.array(p), lane_box
+                )  # only points inside lanebox considered
             ]
 
-            if len(scan.object_list) > 0:
+            if len(scan.object_list) > 0:  # predetected objects
                 for object_idx, obj in scan.object_list:
-                    frame_data["clusters"].append(
-                        {
-                            "front_x": obj.position.x,
-                            "front_y": obj.position.y - obj.dimension.y / 2,
-                            "front_z": obj.position.z,
-                            "extent_x": obj.dimenstion.x,
-                            "extent_y": obj.dimension.y,
-                            "extent_z": obj.dimension.z,
-                        }
-                    )
-            else:
+                    if is_point_in_box(
+                        np.array(obj.position), lane_box
+                    ):  # only objects (center) inside lanebox considered
+                        frame_data["clusters"].append(
+                            {
+                                "front_x": obj.position.x,
+                                "front_y": obj.position.y - obj.dimension.y / 2,
+                                "front_z": obj.position.z,
+                                "extent_x": obj.dimenstion.x,
+                                "extent_y": obj.dimension.y,
+                                "extent_z": obj.dimension.z,
+                            }
+                        )
+            else:  # manual object detection (standard DBSCAN implementation from open3d docs)
                 if filtered_points:
                     pcd = o3d.geometry.PointCloud()
                     pcd.points = o3d.utility.Vector3dVector(filtered_points)
@@ -89,8 +105,9 @@ def load_lidar_data():
 
 def merge_clusters(clusters, expected_length):
     """
-    Merge fragmented clusters along Y-axis if they are within the expected vehicle length.
-    Returns a list of merged axis-aligned bounding boxes.
+    Checks if a cluster might have another cluster within the axle distance given by the WIM and concatenates the two clusters if so. (important for trucks with beds or trailers)
+    Returns:
+        List of merged axis-aligned bounding boxes.
     """
     if not clusters:
         return []
@@ -109,8 +126,9 @@ def merge_clusters(clusters, expected_length):
         max_z = c["front_z"] + c["extent_z"]
 
         for j, c2 in enumerate(clusters[i + 1 :], start=i + 1):
-            # Merge if within expected_length
-            if c2["front_y"] - min_y < expected_length:
+            if (
+                c2["front_y"] - min_y < expected_length
+            ):  # only merge if within expected length
                 used.add(j)
                 min_x = min(min_x, c2["front_x"])
                 max_x = max(max_x, c2["front_x"] + c2["extent_x"])
@@ -137,8 +155,9 @@ def kalman_track(
     lidar_data, x_init, P_init, start_frame, direction, N, T, Q, R, distance_thresh
 ):
     """
-    Kalman tracking with cluster association.
-    Returns positions, velocities, and chosen cluster info per frame.
+    Forward and backward tracking for clusters/objects
+    Returns:
+        Positions, velocities and closest observation at every timestep.
     """
     if direction == "forward":
         Ad = np.array([[1, T], [0, 1]])
@@ -189,7 +208,7 @@ def kalman_track(
         x = Ad @ x_tilde
         P = Ad @ P_tilde @ Ad.T + Gd @ Gd.T * Q
 
-        # stop tracking out of range
+        # stop tracking if out of range
         if (direction == "forward" and x[0, 0] < 0.1) or (
             direction == "backward" and x[0, 0] > 25
         ):
@@ -199,7 +218,7 @@ def kalman_track(
             break
 
         y_filtered.append(x_tilde[0, 0])
-        v_filtered.append(abs(x_tilde[1, 0]))  # absolute velocity
+        v_filtered.append(abs(x_tilde[1, 0]))  # absolute velocity in m/s
         cluster_info.append((k, chosen_cluster))
 
     return y_filtered, v_filtered, cluster_info
@@ -207,7 +226,7 @@ def kalman_track(
 
 def export_track_to_rows(kalman_tracks, lidar_data, frame_file, object_id_start=1):
     """
-    Convert tracked objects into CSV-friendly rows.
+    Convert tracked objects into CSV rows.
     """
     rows = []
     obj_id = object_id_start
@@ -266,12 +285,12 @@ def visualize(lidar_data, N, kalman_tracks):
     """
     plt.figure(figsize=(14, 7))
 
-    # Plot raw LiDAR clusters
+    # plot raw Lidar clusters
     for k in range(N):
         for cluster in lidar_data[k].get("clusters", []):
             plt.plot(k, cluster["front_y"], "bo", alpha=0.3)
 
-    # Plot tracks
+    # plot tracks
     for (
         start_frame,
         y_forward,
@@ -290,7 +309,7 @@ def visualize(lidar_data, N, kalman_tracks):
         forward_positions = [c["front_y"] for _, c in forward_info if c]
         plt.plot(forward_frames, forward_positions, "rx-")
 
-    # Legend
+    # manual legend
     blue_dot = mlines.Line2D(
         [],
         [],
@@ -311,7 +330,7 @@ def visualize(lidar_data, N, kalman_tracks):
     plt.grid(True)
     plt.xlabel("Frame")
     plt.ylabel("Position (m)")
-    plt.title("LiDAR Observations and Kalman Filter Tracking")
+    plt.title("Lidar Observations and Kalman Filter Tracking")
     plt.show()
 
 
@@ -332,13 +351,15 @@ def main():
         k_WIM = int(row["detection_frame"])
         v_WIM = (
             -row["speed_in_kmh"] / 3.6
-        )  # Convert km/h to m/s and negate for direction
+        )  # convert km/h to m/s and negate for direction
         y_WIM = Y_WIM_DEFAULT
 
-        axle_spaces = [float(a) for a in str(row["axle_spaces_in_cm"]).split(";") if a]
+        axle_spaces = [
+            float(a) for a in str(row["axle_spaces_in_cm"]).split(";") if a
+        ]  # parses ';' separated values in WIM CSV
         vehicle_length = sum(axle_spaces) / 100.0  # in meters
 
-        # Correct for missing LiDAR data in starting frame
+        # correct for missing Lidar data in starting frame (possible discrepancy between calculated and actual detection frame) (maximum of one frame as "grace" period)
         if not lidar_data[k_WIM]["clusters"]:
             k_WIM += 1
             if k_WIM >= N:
@@ -347,7 +368,7 @@ def main():
                 )
                 continue
 
-        # Find closest object in detection frame
+        # find closest object in detection frame
         if lidar_data[k_WIM]["clusters"]:
             distances = np.abs(
                 np.array([c["front_y"] for c in lidar_data[k_WIM]["clusters"]]) - y_WIM
@@ -363,7 +384,7 @@ def main():
             lidar_data, x_init, P_INIT, k_WIM, "backward", N, T, Q, R, DISTANCE_THRESH
         )
 
-        # Merge clusters dynamically for this vehicle for all frames in its track
+        # merge clusters dynamically for this vehicle for all frames in its track
         for frame_idx, _ in backward_info[::-1] + forward_info:
             clusters = lidar_data[frame_idx].get("clusters", [])
             if clusters:
@@ -371,7 +392,7 @@ def main():
                     clusters, vehicle_length
                 )
 
-        # Filter out tracks with only one point
+        # filter out tracks with only two points as two points (one per tracking direction) indicates an error in the data
         total_points = sum(
             c is not None for _, c in (backward_info[::-1] + forward_info)
         )
@@ -394,7 +415,9 @@ def main():
             )
         )
 
-    visualize(lidar_data, N, kalman_tracks)
+    visualize(
+        lidar_data, N, kalman_tracks
+    )  # deduplication only relevant for csv and not visualization (connected dots look nicer :))
 
     rows = export_track_to_rows(kalman_tracks, lidar_data, FRAME_FILE)
     pd.DataFrame(rows).to_csv("tracked_objects_2.csv", index=False)
