@@ -1,4 +1,3 @@
-# !not sure if the offset is working as inteded but modifies the pandas correctly!
 # checks lidar data and wim data to find the position of objects crossing the wim in 3d space
 # speed and position later used as starting values of the kalman filter
 from config import FRAME_FILE
@@ -10,8 +9,10 @@ import pandas as pd
 import numpy as np
 import open3d as o3d
 
+
 def _datetime_to_unix_ns(datetime):
     return pd.to_datetime(datetime).value
+
 
 # used to crop WIM DataFrame
 def _get_minmax_lidar_timestamp():
@@ -22,11 +23,14 @@ def _get_minmax_lidar_timestamp():
     for frame_iterator, frame in enumerate(all_frames):
         if frame_iterator == 0:
             min_timestamp = frame.frame_timestamp_ns
-        elif frame.frame_timestamp_ns > max_timestamp: # end is not indexable so the entire loop is being run until the last object is found
+        elif (
+            frame.frame_timestamp_ns > max_timestamp
+        ):  # end is not indexable so the entire loop is being run until the last object is found
             max_timestamp = frame.frame_timestamp_ns
 
     minmax_timestamp = np.array([min_timestamp, max_timestamp])
-    return(minmax_timestamp)
+    return minmax_timestamp
+
 
 # checks for the first frame to have a later timestamp than the WIM data and thus be the first frame after detection
 def _get_detection_frame(timestamp):
@@ -34,10 +38,11 @@ def _get_detection_frame(timestamp):
         if frame.frame_timestamp_ns >= timestamp:
             return frame_iterator
 
+
 # used to get the postion (front center) of the object with the closest distance to the WIM's y position
 def _get_closest_object_to_wim(frame_index):
     wim_position_y = 10.67  # position of WIM sensor along Y axis
-    smallest_distance = float('inf')
+    smallest_distance = float("inf")
     closest_object = np.array([-1, -1, -1])
 
     for frame_iterator, frame in enumerate(read_length_delimited_frames(FRAME_FILE)):
@@ -57,7 +62,9 @@ def _get_closest_object_to_wim(frame_index):
             pcd = o3d.geometry.PointCloud()
             pcd.points = o3d.utility.Vector3dVector(filtered)
 
-            labels = np.array(pcd.cluster_dbscan(eps=3, min_points=3, print_progress=False))
+            labels = np.array(
+                pcd.cluster_dbscan(eps=3, min_points=3, print_progress=False)
+            )
             max_label = labels.max()
 
             for i in range(max_label + 1):
@@ -67,7 +74,9 @@ def _get_closest_object_to_wim(frame_index):
                 if cluster_points.shape[0] == 0:
                     continue
 
-                aabb = o3d.geometry.AxisAlignedBoundingBox.create_from_points(o3d.utility.Vector3dVector(cluster_points))
+                aabb = o3d.geometry.AxisAlignedBoundingBox.create_from_points(
+                    o3d.utility.Vector3dVector(cluster_points)
+                )
                 front_y = aabb.get_min_bound()[1]
                 center_x = aabb.get_center()[0]
                 center_z = aabb.get_center()[2]
@@ -84,24 +93,39 @@ def _get_closest_object_to_wim(frame_index):
 def get_wim_correspondence(PATH):
     wim_data = pd.read_csv(PATH)
 
-    wim_data = wim_data[wim_data['data_source_device_id'] == 'A42-FR-GeKi-Spur-Rechts'] #only look at the right lane
+    wim_data = wim_data[
+        wim_data["data_source_device_id"] == "A42-FR-GeKi-Spur-Rechts"
+    ]  # only look at the right lane
 
-    wim_data['merge_unix_timestamp_ns'] = wim_data['merge_timestamp'].apply(_datetime_to_unix_ns) # timestamp for easy processing
-    wim_data['merge_unix_timestamp_ns'] = wim_data['merge_unix_timestamp_ns'] - 7_200_000_000_000 # utc+2 to utc (7.2 trillion seconds)
+    wim_data["merge_unix_timestamp_ns"] = wim_data["merge_timestamp"].apply(
+        _datetime_to_unix_ns
+    )  # timestamp for easy processing
+    wim_data["merge_unix_timestamp_ns"] = (
+        wim_data["merge_unix_timestamp_ns"] - 7_200_000_000_000
+    )  # utc+2 to utc (7.2 trillion seconds)
 
-    '''1752218382402629927 example frame where ther should be a detection
-       1752218383819644000 closest WIM detection <- 8 frames too late => ~ 1.41 second offset'''
-       
+    """1752218382402629927 example frame where ther should be a detection
+       1752218383819644000 closest WIM detection <- 8 frames too late => ~ 1.41 second offset"""
+
     #!experiment!
-    wim_data['merge_unix_timestamp_ns'] = wim_data['merge_unix_timestamp_ns'] - 1_400_000_000  # 1.41 seconds
+    wim_data["merge_unix_timestamp_ns"] = (
+        wim_data["merge_unix_timestamp_ns"] - 1_400_000_000
+    )  # 1.41 seconds
     #!experiment!
 
-    minmax_timestamp = _get_minmax_lidar_timestamp() 
-    wim_data = wim_data[(wim_data['merge_unix_timestamp_ns'] >= minmax_timestamp[0]) & (wim_data['merge_unix_timestamp_ns'] <= minmax_timestamp[1])] #only look at the time of lidar frames
-    
-    wim_data = wim_data.sort_values(by='merge_unix_timestamp_ns')
+    minmax_timestamp = _get_minmax_lidar_timestamp()
+    wim_data = wim_data[
+        (wim_data["merge_unix_timestamp_ns"] >= minmax_timestamp[0])
+        & (wim_data["merge_unix_timestamp_ns"] <= minmax_timestamp[1])
+    ]  # only look at the time of lidar frames
 
-    wim_data['detection_frame'] = wim_data['merge_unix_timestamp_ns'].apply(_get_detection_frame) 
-    wim_data['closest_object'] = wim_data['detection_frame'].apply(_get_closest_object_to_wim)
-    
+    wim_data = wim_data.sort_values(by="merge_unix_timestamp_ns")
+
+    wim_data["detection_frame"] = wim_data["merge_unix_timestamp_ns"].apply(
+        _get_detection_frame
+    )
+    wim_data["closest_object"] = wim_data["detection_frame"].apply(
+        _get_closest_object_to_wim
+    )
+
     return wim_data

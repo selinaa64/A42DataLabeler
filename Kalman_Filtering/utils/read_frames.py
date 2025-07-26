@@ -3,6 +3,7 @@ import logging
 from google.protobuf.message import DecodeError
 from a42.frame_pb2 import Frame
 
+
 def read_length_delimited_frames(path):
     """Liest length-delimited protobuf Frames aus Datei."""
     with open(path, "rb") as f:

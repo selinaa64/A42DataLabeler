@@ -1,5 +1,6 @@
 import numpy as np
 
+
 def is_point_in_box(point, box):
     relative_point = np.dot(point - box.center, box.R)
     max_extents = box.extent / 2.0
