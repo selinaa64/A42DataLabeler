@@ -56,17 +56,21 @@ def load_lidar_data():
                 )  # only points inside lanebox considered
             ]
 
-            if len(scan.object_list) > 0:  # predetected objects
-                for object_idx, obj in scan.object_list:
+            if len(scan.object_list) > 0:  # predetected objects (no demo possible right now since the only frame sequences with objects are in an older format or broken :( )
+                for object_idx, obj in enumerate(scan.object_list):
+                    obj_center = np.array(
+                        [obj.position.x, obj.position.y, obj.position.z],
+                        dtype=np.float32,
+                    )
                     if is_point_in_box(
-                        np.array(obj.position), lane_box
+                        obj_center, lane_box
                     ):  # only objects (center) inside lanebox considered
                         frame_data["clusters"].append(
                             {
                                 "front_x": obj.position.x,
-                                "front_y": obj.position.y - obj.dimension.y / 2,
+                                "front_y": obj.position.y - (obj.dimension.y / 2),
                                 "front_z": obj.position.z,
-                                "extent_x": obj.dimenstion.x,
+                                "extent_x": obj.dimension.x,
                                 "extent_y": obj.dimension.y,
                                 "extent_z": obj.dimension.z,
                             }
