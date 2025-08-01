@@ -1,5 +1,5 @@
 # A42DataLabeler
-LIDAR data dabeler for the A42 test track
+LIDAR data labeler for the A42 test track
 
 ## Requirements
 - Can be found in "requirements.txt"
