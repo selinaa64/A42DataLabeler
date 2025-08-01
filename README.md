@@ -9,3 +9,4 @@ LIDAR data dabeler for the A42 test track
 ## Todo:
 - [ ] consider minor edge cases
 - [ ] fully dynamic frame period implementation
+- [ ] more variables to be editable in the config
