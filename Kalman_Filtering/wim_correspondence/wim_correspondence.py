@@ -1,6 +1,6 @@
 # checks lidar data and wim data to find the position of objects crossing the wim in 3d space
 # speed and position later used as starting values of the kalman filter
-from config import FRAME_FILE
+from config import FRAME_FILE_NEW, FRAME_FILE_OLD
 from utils import read_length_delimited_frames
 from utils import create_lane_box
 from utils import is_point_in_box
@@ -18,7 +18,7 @@ def _datetime_to_unix_ns(datetime):
 def _get_minmax_lidar_timestamp():
     min_timestamp = 0
     max_timestamp = 0
-    all_frames = read_length_delimited_frames(FRAME_FILE)
+    all_frames = read_length_delimited_frames(FRAME_FILE_NEW)
 
     for frame_iterator, frame in enumerate(all_frames):
         if frame_iterator == 0:

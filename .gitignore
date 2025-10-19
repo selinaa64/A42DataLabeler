@@ -3,6 +3,8 @@
 **/.venv/
 .venv/
 venv/
+
+*.pyc
 # Compiled source #
 ###################
 *.com
@@ -41,3 +43,6 @@ venv/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+
+*.pyc

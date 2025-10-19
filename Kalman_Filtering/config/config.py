@@ -1,7 +1,9 @@
 import numpy as np
 
-FRAME_FILE = r"/users/emil/Documents/HS_Esslingen/Studienprojekt/Data/TestData2/no_objects_new.pb"
-WIM_FILE = r"/Users/emil/Documents/HS_Esslingen/Studienprojekt/Data/TestData2/data-1753189594175.csv"
+FRAME_FILE_OLD = r"C:/Users/selin/Documents/studium/forschungsprojekt/data/version_0_2_data.pb"
+FRAME_FILE_NEW = r"C:/Users/selin/Documents/studium/forschungsprojekt/data/version_0_4_data_lane_2.pb"
+
+WIM_FILE = r"C:/Users/selin/Documents/studium/forschungsprojekt/data/data-1753369613718.csv"
 
 LANE_BOX_DIMS = np.array([3.3, 90, 3.5])
 LANE_BOX_POS = np.array([0, 0, 1.88])

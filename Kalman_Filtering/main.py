@@ -26,7 +26,8 @@ from config import (
     R,
     P_INIT,
     WIM_FILE,
-    FRAME_FILE,
+    FRAME_FILE_NEW,
+    FRAME_FILE_OLD,
 )
 
 # Setup logging
@@ -43,67 +44,67 @@ def load_lidar_data():
     """
     lane_box = create_lane_box(LANE_BOX_DIMS, LANE_BOX_POS)
     lidar_data = []
-
-    for frame_idx, frame in enumerate(read_length_delimited_frames(FRAME_FILE)):
-        frame_data = {"timestamp_ns": frame.frame_timestamp_ns, "clusters": []}
-        for scan in frame.lidars:
-            raw_points = np.array([[p.x, p.y, p.z] for p in scan.pointcloud.points])
-            filtered_points = [
-                p
-                for p in raw_points
-                if is_point_in_box(
-                    np.array(p), lane_box
-                )  # only points inside lanebox considered
-            ]
-
-            if len(scan.object_list) > 0:  # predetected objects (no demo possible right now since the only frame sequences with objects are in an older format or broken :( )
-                for object_idx, obj in enumerate(scan.object_list):
-                    obj_center = np.array(
-                        [obj.position.x, obj.position.y, obj.position.z],
-                        dtype=np.float32,
-                    )
+    for frame_idx, frame in enumerate(read_length_delimited_frames(FRAME_FILE_NEW)):
+            if frame_idx==10: return lidar_data  # for testing purposes, limit to first 10 frames
+            frame_data = {"timestamp_ns": frame.frame_timestamp_ns, "clusters": []}
+            for scan in frame.lidars:
+                raw_points = np.frombuffer(scan.pointcloud.cartesian, dtype="<f4").reshape(-1, 3)
+                filtered_points = [
+                    p
+                    for p in raw_points
                     if is_point_in_box(
-                        obj_center, lane_box
-                    ):  # only objects (center) inside lanebox considered
-                        frame_data["clusters"].append(
-                            {
-                                "front_x": obj.position.x,
-                                "front_y": obj.position.y - (obj.dimension.y / 2),
-                                "front_z": obj.position.z,
-                                "extent_x": obj.dimension.x,
-                                "extent_y": obj.dimension.y,
-                                "extent_z": obj.dimension.z,
-                            }
-                        )
-            else:  # manual object detection (standard DBSCAN implementation from open3d docs)
-                if filtered_points:
-                    pcd = o3d.geometry.PointCloud()
-                    pcd.points = o3d.utility.Vector3dVector(filtered_points)
-                    labels = np.array(
-                        pcd.cluster_dbscan(eps=3, min_points=5, print_progress=False)
-                    )
-                    max_label = labels.max()
+                        np.array(p), lane_box
+                    )  # only points inside lanebox considered
+                ]
 
-                    for cluster_id in range(max_label + 1):
-                        cluster_indices = np.where(labels == cluster_id)[0]
-                        cluster_points = np.asarray(pcd.points)[cluster_indices]
-                        if cluster_points.shape[0] == 0:
-                            continue
-                        cluster_pcd = o3d.geometry.PointCloud()
-                        cluster_pcd.points = o3d.utility.Vector3dVector(cluster_points)
-                        aabb = cluster_pcd.get_axis_aligned_bounding_box()
-                        frame_data["clusters"].append(
-                            {
-                                "front_x": aabb.get_min_bound()[0],
-                                "front_y": aabb.get_min_bound()[1],
-                                "front_z": aabb.get_min_bound()[2],
-                                "extent_x": aabb.get_extent()[0],
-                                "extent_y": aabb.get_extent()[1],
-                                "extent_z": aabb.get_extent()[2],
-                            }
+                if len(scan.object_list) > 0:  # predetected objects (no demo possible right now since the only frame sequences with objects are in an older format or broken :( )
+                    for object_idx, obj in enumerate(scan.object_list):
+                        obj_center = np.array(
+                            [obj.position.x, obj.position.y, obj.position.z],
+                            dtype=np.float32,
                         )
+                        if is_point_in_box(
+                            obj_center, lane_box
+                        ):  # only objects (center) inside lanebox considered
+                            frame_data["clusters"].append(
+                                {
+                                    "front_x": obj.position.x,
+                                    "front_y": obj.position.y - (obj.dimension.y / 2),
+                                    "front_z": obj.position.z,
+                                    "extent_x": obj.dimension.x,
+                                    "extent_y": obj.dimension.y,
+                                    "extent_z": obj.dimension.z,
+                                }
+                            )
+                else:  # manual object detection (standard DBSCAN implementation from open3d docs)
+                    if filtered_points:
+                        pcd = o3d.geometry.PointCloud()
+                        pcd.points = o3d.utility.Vector3dVector(filtered_points)
+                        labels = np.array(
+                            pcd.cluster_dbscan(eps=3, min_points=5, print_progress=False)
+                        )
+                        max_label = labels.max()
 
-        lidar_data.append(frame_data)
+                        for cluster_id in range(max_label + 1):
+                            cluster_indices = np.where(labels == cluster_id)[0]
+                            cluster_points = np.asarray(pcd.points)[cluster_indices]
+                            if cluster_points.shape[0] == 0:
+                                continue
+                            cluster_pcd = o3d.geometry.PointCloud()
+                            cluster_pcd.points = o3d.utility.Vector3dVector(cluster_points)
+                            aabb = cluster_pcd.get_axis_aligned_bounding_box()
+                            frame_data["clusters"].append(
+                                {
+                                    "front_x": aabb.get_min_bound()[0],
+                                    "front_y": aabb.get_min_bound()[1],
+                                    "front_z": aabb.get_min_bound()[2],
+                                    "extent_x": aabb.get_extent()[0],
+                                    "extent_y": aabb.get_extent()[1],
+                                    "extent_z": aabb.get_extent()[2],
+                                }
+                            )
+
+            lidar_data.append(frame_data)
     return lidar_data
 
 

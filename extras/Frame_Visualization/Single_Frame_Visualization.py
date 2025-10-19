@@ -8,7 +8,7 @@ import open3d as o3d
 from google.protobuf.message import DecodeError
 from a42.frame_pb2 import Frame
 
-FRAME_FILE = r"/users/emil/Documents/HS_Esslingen/Studienprojekt/Data/TestData2/no_objects_new.pb" # hardcoded custom path
+FRAME_FILE = r"C:/Users/selin/Documents/studium/forschungsprojekt/data/with_objects_new.pb" # hardcoded custom path
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))

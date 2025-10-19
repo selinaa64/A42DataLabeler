@@ -6,9 +6,9 @@ import logging
 import numpy as np
 import open3d as o3d
 from google.protobuf.message import DecodeError
-from a42.frame_pb2 import Frame
+from a42.frame import Frame
 
-FRAME_FILE = r"/users/emil/Documents/HS_Esslingen/Studienprojekt/Data/TestData2/no_objects_new.pb" # hardcoded custom path, change to where the protobuf file is strored
+FRAME_FILE = r"C:/Users/selin/Documents/studium/forschungsprojekt/data/with_objects_new.pb" # hardcoded custom path, change to where the protobuf file is strored
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))

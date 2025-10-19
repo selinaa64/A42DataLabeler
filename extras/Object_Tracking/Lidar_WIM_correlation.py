@@ -12,7 +12,7 @@ import open3d as o3d
 from google.protobuf.message import DecodeError
 from a42.frame_pb2 import Frame
 
-FRAME_FILE = r"/users/emil/Documents/HS_Esslingen/Studienprojekt/Data/TestData1/all_frames.pb"
+FRAME_FILE = r"C:/Users/selin/Documents/studium/forschungsprojekt/data/all_frames.pb"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
@@ -118,7 +118,7 @@ def main():
         log.error(f"Datei nicht gefunden: {FRAME_FILE}")
         return
 
-    wim_data = pd.read_csv('/Users/emil/Documents/HS_Esslingen/Studienprojekt/Data/TestData1/data-1752218465752.csv')
+    wim_data = pd.read_csv('C:/Users/selin/Documents/studium/forschungsprojekt/data/data-1753369613718.csv')
 
     wim_data = wim_data[wim_data['data_source_device_id'] == 'A42-FR-GeKi-Spur-Rechts'] #only look at the right lane
 
