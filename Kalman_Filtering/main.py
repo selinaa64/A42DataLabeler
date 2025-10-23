@@ -29,6 +29,7 @@ from config import (
     FRAME_FILE_NEW,
     FRAME_FILE_OLD,
 )
+from comark.comark import load_comark_data
 
 # Setup logging
 logging.basicConfig(
@@ -338,6 +339,8 @@ def visualize(lidar_data, N, kalman_tracks):
     plt.title("Lidar Observations and Kalman Filter Tracking")
     plt.show()
 
+def match_comark_and_lidar(comark_data, lidar_data): 
+    pass
 
 def main():
     logging.info("Loading LiDAR data...")
@@ -345,88 +348,93 @@ def main():
 
     T = get_period()
     N = get_sequence_length()
-    wim_data = get_wim_correspondence(WIM_FILE)
 
-    logging.info(f"Total frames: {N}")
-    logging.info(f"Time between frames: {T:.3f} s")
+    comark_data = load_comark_data()  # function to load comark data if needed
+    matched_data = match_comark_and_lidar(comark_data, lidar_data)
+    print(comark_data)
+    print(lidar_data)
+    # wim_data = get_wim_correspondence(WIM_FILE)
 
-    kalman_tracks = []
+    # logging.info(f"Total frames: {N}")
+    # logging.info(f"Time between frames: {T:.3f} s")
 
-    for _, row in wim_data.iterrows():
-        k_WIM = int(row["detection_frame"])
-        v_WIM = (
-            -row["speed_in_kmh"] / 3.6
-        )  # convert km/h to m/s and negate for direction
-        y_WIM = Y_WIM_DEFAULT
+    # kalman_tracks = []
 
-        axle_spaces = [
-            float(a) for a in str(row["axle_spaces_in_cm"]).split(";") if a
-        ]  # parses ';' separated values in WIM CSV
-        vehicle_length = sum(axle_spaces) / 100.0  # in meters
+    # for _, row in wim_data.iterrows():
+    #     k_WIM = int(row["detection_frame"])
+    #     v_WIM = (
+    #         -row["speed_in_kmh"] / 3.6
+    #     )  # convert km/h to m/s and negate for direction
+    #     y_WIM = Y_WIM_DEFAULT
 
-        # correct for missing Lidar data in starting frame (possible discrepancy between calculated and actual detection frame) (maximum of one frame as "grace" period)
-        if not lidar_data[k_WIM]["clusters"]:
-            k_WIM += 1
-            if k_WIM >= N:
-                logging.warning(
-                    f"No LiDAR data available near WIM detection frame {k_WIM}. Skipping..."
-                )
-                continue
+    #     axle_spaces = [
+    #         float(a) for a in str(row["axle_spaces_in_cm"]).split(";") if a
+    #     ]  # parses ';' separated values in WIM CSV
+    #     vehicle_length = sum(axle_spaces) / 100.0  # in meters
 
-        # find closest object in detection frame
-        if lidar_data[k_WIM]["clusters"]:
-            distances = np.abs(
-                np.array([c["front_y"] for c in lidar_data[k_WIM]["clusters"]]) - y_WIM
-            )
-            y_WIM = lidar_data[k_WIM]["clusters"][np.argmin(distances)]["front_y"]
+    #     # correct for missing Lidar data in starting frame (possible discrepancy between calculated and actual detection frame) (maximum of one frame as "grace" period)
+    #     if not lidar_data[k_WIM]["clusters"]:
+    #         k_WIM += 1
+    #         if k_WIM >= N:
+    #             logging.warning(
+    #                 f"No LiDAR data available near WIM detection frame {k_WIM}. Skipping..."
+    #             )
+    #             continue
 
-        x_init = np.array([[y_WIM], [v_WIM]])
+    #     # find closest object in detection frame
+    #     if lidar_data[k_WIM]["clusters"]:
+    #         distances = np.abs(
+    #             np.array([c["front_y"] for c in lidar_data[k_WIM]["clusters"]]) - y_WIM
+    #         )
+    #         y_WIM = lidar_data[k_WIM]["clusters"][np.argmin(distances)]["front_y"]
 
-        y_forward, v_forward, forward_info = kalman_track(
-            lidar_data, x_init, P_INIT, k_WIM, "forward", N, T, Q, R, DISTANCE_THRESH
-        )
-        y_backward, v_backward, backward_info = kalman_track(
-            lidar_data, x_init, P_INIT, k_WIM, "backward", N, T, Q, R, DISTANCE_THRESH
-        )
+    #     x_init = np.array([[y_WIM], [v_WIM]])
 
-        # merge clusters dynamically for this vehicle for all frames in its track
-        for frame_idx, _ in backward_info[::-1] + forward_info:
-            clusters = lidar_data[frame_idx].get("clusters", [])
-            if clusters:
-                lidar_data[frame_idx]["clusters"] = merge_clusters(
-                    clusters, vehicle_length
-                )
+    #     y_forward, v_forward, forward_info = kalman_track(
+    #         lidar_data, x_init, P_INIT, k_WIM, "forward", N, T, Q, R, DISTANCE_THRESH
+    #     )
+    #     y_backward, v_backward, backward_info = kalman_track(
+    #         lidar_data, x_init, P_INIT, k_WIM, "backward", N, T, Q, R, DISTANCE_THRESH
+    #     )
 
-        # filter out tracks with only two points as two points (one per tracking direction) indicates an error in the data
-        total_points = sum(
-            c is not None for _, c in (backward_info[::-1] + forward_info)
-        )
-        if total_points <= 2:
-            logging.info(
-                f"Skipping track at frame {k_WIM} (only {total_points} point detected)"
-            )
-            continue
+    #     # merge clusters dynamically for this vehicle for all frames in its track
+    #     for frame_idx, _ in backward_info[::-1] + forward_info:
+    #         clusters = lidar_data[frame_idx].get("clusters", [])
+    #         if clusters:
+    #             lidar_data[frame_idx]["clusters"] = merge_clusters(
+    #                 clusters, vehicle_length
+    #             )
 
-        kalman_tracks.append(
-            (
-                k_WIM,
-                y_forward,
-                v_forward,
-                forward_info,
-                y_backward,
-                v_backward,
-                backward_info,
-                row,
-            )
-        )
+    #     # filter out tracks with only two points as two points (one per tracking direction) indicates an error in the data
+    #     total_points = sum(
+    #         c is not None for _, c in (backward_info[::-1] + forward_info)
+    #     )
+    #     if total_points <= 2:
+    #         logging.info(
+    #             f"Skipping track at frame {k_WIM} (only {total_points} point detected)"
+    #         )
+    #         continue
 
-    visualize(
-        lidar_data, N, kalman_tracks
-    )  # deduplication only relevant for csv and not visualization (connected dots look nicer :))
+    #     kalman_tracks.append(
+    #         (
+    #             k_WIM,
+    #             y_forward,
+    #             v_forward,
+    #             forward_info,
+    #             y_backward,
+    #             v_backward,
+    #             backward_info,
+    #             row,
+    #         )
+    #     )
 
-    rows = export_track_to_rows(kalman_tracks, lidar_data, FRAME_FILE)
-    pd.DataFrame(rows).to_csv("tracked_objects_2.csv", index=False)
-    logging.info("Exported tracked objects to tracked_objects_2.csv")
+    # visualize(
+    #     lidar_data, N, kalman_tracks
+    # )  # deduplication only relevant for csv and not visualization (connected dots look nicer :))
+
+    # rows = export_track_to_rows(kalman_tracks, lidar_data, FRAME_FILE_NEW)
+    # pd.DataFrame(rows).to_csv("tracked_objects_2.csv", index=False)
+    # logging.info("Exported tracked objects to tracked_objects_2.csv")
 
 
 if __name__ == "__main__":
