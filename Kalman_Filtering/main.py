@@ -30,7 +30,7 @@ from config import (
     FRAME_FILE_OLD,
 )
 from comark.comark import load_comark_data
-
+import datetime
 # Setup logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -108,6 +108,17 @@ def load_lidar_data():
             lidar_data.append(frame_data)
     return lidar_data
 
+def convert_unix_timestamp_to_ISO(lidar_data):
+    """
+    Changes the timestamps of the lidar data from nanoseconds to seconds.
+    Returns:
+        List of dicts: Each frame has a timestamp in seconds and no/one/multiple objects/clusters with the associated information.
+    """
+    for frame in lidar_data:
+        ts_ns = frame["timestamp_ns"]
+        dt=datetime.datetime.fromtimestamp(ts_ns / 1e9)
+        frame["timestamp_ns"] = dt.isoformat() # convert ns to s
+    return lidar_data
 
 def merge_clusters(clusters, expected_length):
     """
@@ -345,9 +356,11 @@ def match_comark_and_lidar(comark_data, lidar_data):
 def main():
     logging.info("Loading LiDAR data...")
     lidar_data = load_lidar_data()
+    lidar_data=convert_unix_timestamp_to_ISO(lidar_data)
 
     T = get_period()
     N = get_sequence_length()
+    logging.info("Loading Comark data...")
 
     comark_data = load_comark_data()  # function to load comark data if needed
     matched_data = match_comark_and_lidar(comark_data, lidar_data)
