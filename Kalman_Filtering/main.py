@@ -351,18 +351,56 @@ def visualize(lidar_data, N, kalman_tracks):
     plt.show()
 
 def match_comark_and_lidar(comark_data, lidar_data): 
-    pass
+    C = []
+    lidar_index = {}
+    for l in lidar_data:
+        ts = l.get('timestamp_ns')
+        if ts is None:
+            continue
+        lidar_index.setdefault(ts, []).append(l)
+    comark_items = [
+        (c.get('timestamp'), c)
+        for c in (comark_data.get('labels') or {}).values()
+        if isinstance(c, dict) and c.get('timestamp') is not None
+    ]
+    comark_items.sort(key=lambda x: x[0])
+    hits = 0
+    unmatched_comark = []   # (timestamp, grund)
+    for ts, c in comark_items:
+        label = (c.get('file_info') or {}).get('class_label')
+        if not label:
+            unmatched_comark.append((ts, 'no_class_label'))
+            continue
+
+        # 3) Exakter Match über Zeitstring?
+        candidates = lidar_index.get(ts)
+        if candidates:
+            for li in candidates:
+                li['label'] = label
+                hits += 1
+            # Optional: Einmalige Zuordnung erzwingen:
+            # del lidar_index[ts]
+        else:
+            unmatched_comark.append((ts, 'no_lidar_match'))
+
+    # 4) LiDAR-Zeitstempel ohne gesetztes Label (nur Info)
+    unmatched_lidar = []
+    for ts, entries in lidar_index.items():
+        if any('label' not in e for e in entries):
+            unmatched_lidar.append(ts)
+
+    return hits, unmatched_comark, unmatched_lidar
 
 def main():
     logging.info("Loading LiDAR data...")
     lidar_data = load_lidar_data()
     lidar_data=convert_unix_timestamp_to_ISO(lidar_data)
-
     T = get_period()
     N = get_sequence_length()
     logging.info("Loading Comark data...")
 
     comark_data = load_comark_data()  # function to load comark data if needed
+
     matched_data = match_comark_and_lidar(comark_data, lidar_data)
     print(comark_data)
     print(lidar_data)
