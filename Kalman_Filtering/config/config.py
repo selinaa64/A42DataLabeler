@@ -1,7 +1,7 @@
 import numpy as np
 
 FRAME_FILE_OLD = r"C:/Users/selin/Documents/studium/forschungsprojekt/data/version_0_2_data.pb"
-FRAME_FILE_NEW = r"C:/Users/selin/Documents/studium/forschungsprojekt/data/version_0_4_data_lane_2.pb"
+FRAME_FILE_NEW = r"C:/Users/selin/Documents/studium/forschungsprojekt/data/20251031_081432_merged.pb"
 
 WIM_FILE = r"C:/Users/selin/Documents/studium/forschungsprojekt/data/data-1753369613718.csv"
 COMARK_FILE = r"C:/Users/selin/Documents/studium/forschungsprojekt/data/all_labels.json"

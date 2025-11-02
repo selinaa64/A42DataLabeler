@@ -29,7 +29,7 @@ from config import (
     FRAME_FILE_NEW,
     FRAME_FILE_OLD,
 )
-from comark.comark import load_comark_data
+from comark.comark import load_comark_data, get_neccessary_comark_infos, cut_comark_data_to_lidar_date
 import datetime
 # Setup logging
 logging.basicConfig(
@@ -46,7 +46,7 @@ def load_lidar_data():
     lane_box = create_lane_box(LANE_BOX_DIMS, LANE_BOX_POS)
     lidar_data = []
     for frame_idx, frame in enumerate(read_length_delimited_frames(FRAME_FILE_NEW)):
-            if frame_idx==10: return lidar_data  # for testing purposes, limit to first 10 frames
+           # if frame_idx==50: return lidar_data  # for testing purposes, limit to first 10 frames
             frame_data = {"timestamp_ns": frame.frame_timestamp_ns, "clusters": []}
             for scan in frame.lidars:
                 raw_points = np.frombuffer(scan.pointcloud.cartesian, dtype="<f4").reshape(-1, 3)
@@ -350,47 +350,69 @@ def visualize(lidar_data, N, kalman_tracks):
     plt.title("Lidar Observations and Kalman Filter Tracking")
     plt.show()
 
+    
 def match_comark_and_lidar(comark_data, lidar_data): 
-    C = []
-    lidar_index = {}
-    for l in lidar_data:
-        ts = l.get('timestamp_ns')
-        if ts is None:
-            continue
-        lidar_index.setdefault(ts, []).append(l)
-    comark_items = [
-        (c.get('timestamp'), c)
-        for c in (comark_data.get('labels') or {}).values()
-        if isinstance(c, dict) and c.get('timestamp') is not None
-    ]
-    comark_items.sort(key=lambda x: x[0])
-    hits = 0
-    unmatched_comark = []   # (timestamp, grund)
-    for ts, c in comark_items:
-        label = (c.get('file_info') or {}).get('class_label')
-        if not label:
-            unmatched_comark.append((ts, 'no_class_label'))
-            continue
-
-        # 3) Exakter Match über Zeitstring?
-        candidates = lidar_index.get(ts)
-        if candidates:
-            for li in candidates:
-                li['label'] = label
-                hits += 1
-            # Optional: Einmalige Zuordnung erzwingen:
-            # del lidar_index[ts]
-        else:
-            unmatched_comark.append((ts, 'no_lidar_match'))
-
-    # 4) LiDAR-Zeitstempel ohne gesetztes Label (nur Info)
+    """Match lidar data with comark labels based on timestamps.
+    
+    Args:
+        comark_data (dict): Dictionary with timestamps as keys and vehicle classes as values
+        lidar_data (list): List of dicts with timestamp_ns and clusters
+        
+    Returns:
+        tuple: (matches, unmatched_comark, unmatched_lidar)
+    """
+    matches = 0
+    unmatched_comark = []
     unmatched_lidar = []
-    for ts, entries in lidar_index.items():
-        if any('label' not in e for e in entries):
-            unmatched_lidar.append(ts)
+    
+    # Convert all timestamps to datetime objects for comparison
+    lidar_times = {}
+    for frame in lidar_data:
+        try:
+            ts = datetime.datetime.fromisoformat(frame["timestamp_ns"])
+            lidar_times[ts] = frame
+        except ValueError:
+            logging.warning(f"Could not parse lidar timestamp: {frame['timestamp_ns']}")
+            continue
+    
+    # Define the maximum time difference (200ms = 0.2 seconds)
+    max_diff = datetime.timedelta(milliseconds=200)
+    
+    # Try to match each comark timestamp with a lidar frame
+    for comark_ts_str, vehicle_class in comark_data.items():
+        try:
+            comark_ts = datetime.datetime.fromisoformat(comark_ts_str)
+        except ValueError:
+            unmatched_comark.append((comark_ts_str, "invalid_timestamp"))
+            continue
+            
+        # Find closest lidar timestamp within tolerance
+        best_match = None
+        min_diff = max_diff
+        
+        for lidar_ts, frame in lidar_times.items():
+            diff = abs(lidar_ts - comark_ts)
+            if diff <= max_diff and diff < min_diff:
+                min_diff = diff
+                best_match = frame
+        
+        if best_match:
+            # Add vehicle class to the frame
+            best_match["vehicle_class"] = vehicle_class
+            matches += 1
+        else:
+            unmatched_comark.append((comark_ts_str, "no_match_within_tolerance"))
+    
+    # Check which lidar frames didn't get a vehicle class
+    for frame in lidar_data:
+        if "vehicle_class" not in frame:
+            unmatched_lidar.append(frame["timestamp_ns"])
+    
+    logging.info(f"Matched {matches} frames. {len(unmatched_comark)} comark entries and {len(unmatched_lidar)} lidar frames unmatched.")
+    return matches, unmatched_comark, unmatched_lidar
 
-    return hits, unmatched_comark, unmatched_lidar
 
+### TODO comark data json in kleineres dict, dann mit timestamp matchen 
 def main():
     logging.info("Loading LiDAR data...")
     lidar_data = load_lidar_data()
@@ -400,10 +422,49 @@ def main():
     logging.info("Loading Comark data...")
 
     comark_data = load_comark_data()  # function to load comark data if needed
-
-    matched_data = match_comark_and_lidar(comark_data, lidar_data)
-    print(comark_data)
-    print(lidar_data)
+    comark_data_dict=get_neccessary_comark_infos(comark_data)
+    print_comark_data_grouped_by_date(comark_data_dict)
+    current_comark_data= cut_comark_data_to_lidar_date(comark_data_dict, lidar_data)
+    
+    print_comark_data_grouped_by_date(current_comark_data)
+        
+    matched_data = match_comark_and_lidar(current_comark_data, lidar_data)
+    #print(matched_data)
+    
+    
+    
+    
+    
+def print_comark_data_grouped_by_date(comark_data_dict):
+    date_counts = {}
+    
+    for timestamp_str in comark_data_dict.keys():
+        # Convert timestamp string to datetime object
+        dt = datetime.datetime.fromisoformat(timestamp_str)
+        # Extract just the date part
+        date = dt.date()
+        
+        # Count occurrences
+        if date in date_counts:
+            date_counts[date] += 1
+        else:
+            date_counts[date] = 1
+            
+    # Print results in a readable format
+    for date, count in date_counts.items():
+        logging.info(f"Date: {date}, Number of entries: {count}")
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    #print(lidar_data)
     # wim_data = get_wim_correspondence(WIM_FILE)
 
     # logging.info(f"Total frames: {N}")
