@@ -29,8 +29,11 @@ from config import (
     FRAME_FILE_NEW,
     FRAME_FILE_OLD,
 )
-from comark.comark import load_comark_data, get_neccessary_comark_infos, cut_comark_data_to_lidar_date
-import datetime
+from comark.comark import load_comark_data, get_neccessary_comark_infos, cut_comark_data_to_lidar_date, cut_comark_data_to_lidar_time
+import bisect
+from typing import Dict, List, Tuple, Any, Optional
+from datetime import datetime, timedelta
+from bisect import bisect_left
 # Setup logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -46,7 +49,7 @@ def load_lidar_data():
     lane_box = create_lane_box(LANE_BOX_DIMS, LANE_BOX_POS)
     lidar_data = []
     for frame_idx, frame in enumerate(read_length_delimited_frames(FRAME_FILE_NEW)):
-           # if frame_idx==50: return lidar_data  # for testing purposes, limit to first 10 frames
+            if frame_idx==50: return lidar_data  # for testing purposes, limit to first 10 frames
             frame_data = {"timestamp_ns": frame.frame_timestamp_ns, "clusters": []}
             for scan in frame.lidars:
                 raw_points = np.frombuffer(scan.pointcloud.cartesian, dtype="<f4").reshape(-1, 3)
@@ -116,8 +119,8 @@ def convert_unix_timestamp_to_ISO(lidar_data):
     """
     for frame in lidar_data:
         ts_ns = frame["timestamp_ns"]
-        dt=datetime.datetime.fromtimestamp(ts_ns / 1e9)
-        frame["timestamp_ns"] = dt.isoformat() # convert ns to s
+        dt = datetime.fromtimestamp(ts_ns / 1e9)
+        frame["timestamp_s"] = dt.isoformat()
     return lidar_data
 
 def merge_clusters(clusters, expected_length):
@@ -351,68 +354,130 @@ def visualize(lidar_data, N, kalman_tracks):
     plt.show()
 
     
-def match_comark_and_lidar(comark_data, lidar_data): 
-    """Match lidar data with comark labels based on timestamps.
-    
-    Args:
-        comark_data (dict): Dictionary with timestamps as keys and vehicle classes as values
-        lidar_data (list): List of dicts with timestamp_ns and clusters
-        
-    Returns:
-        tuple: (matches, unmatched_comark, unmatched_lidar)
+import datetime
+import logging
+from bisect import bisect_left
+import datetime as dt
+import bisect
+from typing import Dict, List, Any, Tuple
+from datetime import datetime, timedelta
+from bisect import bisect_left
+def assign_comark_labels(comark_data: dict, lidar_data: list, offset_ms: int = 200) -> list:
     """
-    matches = 0
-    unmatched_comark = []
-    unmatched_lidar = []
-    
-    # Convert all timestamps to datetime objects for comparison
-    lidar_times = {}
+    Assigns comark labels to lidar frames by finding the nearest matching timestamp.
+    For each lidar frame, finds the comark entry where (comark_timestamp + 200ms) 
+    is closest to the lidar timestamp.
+
+    Args:
+        comark_data: Dict with comark timestamps as keys and [label, timestamp] as values
+        lidar_data: List of dicts with 'timestamp_s' field
+        offset_ms: Offset to add to comark timestamps (default 200ms)
+
+    Returns:
+        Modified lidar_data with added 'object_label' field
+    """
+    if not comark_data or not lidar_data:
+        return lidar_data
+
+    # Convert comark entries to (timestamp + offset, label) pairs
+    offset = timedelta(milliseconds=offset_ms)
+    comark_times = []
+    for _, (label, ts_str) in comark_data.items():
+        try:
+            ts = datetime.fromisoformat(ts_str)
+            comark_times.append((ts + offset, label))
+        except Exception:
+            continue
+
+    # Sort by timestamp for better readability of results
+    comark_times.sort(key=lambda x: x[0])
+
+    # Process each lidar frame
     for frame in lidar_data:
-        try:
-            ts = datetime.datetime.fromisoformat(frame["timestamp_ns"])
-            lidar_times[ts] = frame
-        except ValueError:
-            logging.warning(f"Could not parse lidar timestamp: {frame['timestamp_ns']}")
+        if frame['clusters'] is None or len(frame['clusters']) == 0:
+            frame["object_label"] = None
             continue
-    
-    # Define the maximum time difference (200ms = 0.2 seconds)
-    max_diff = datetime.timedelta(milliseconds=200)
-    
-    # Try to match each comark timestamp with a lidar frame
-    for comark_ts_str, vehicle_class in comark_data.items():
         try:
-            comark_ts = datetime.datetime.fromisoformat(comark_ts_str)
-        except ValueError:
-            unmatched_comark.append((comark_ts_str, "invalid_timestamp"))
-            continue
+            lidar_ts = datetime.fromisoformat(frame["timestamp_s"])
             
-        # Find closest lidar timestamp within tolerance
-        best_match = None
-        min_diff = max_diff
-        
-        for lidar_ts, frame in lidar_times.items():
-            diff = abs(lidar_ts - comark_ts)
-            if diff <= max_diff and diff < min_diff:
-                min_diff = diff
-                best_match = frame
-        
-        if best_match:
-            # Add vehicle class to the frame
-            best_match["vehicle_class"] = vehicle_class
-            matches += 1
+            # Find closest comark timestamp
+            best_diff = timedelta(days=1)  # Large initial value
+            best_label = None
+            
+            for comark_ts, label in comark_times:
+                diff = abs(lidar_ts - comark_ts)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_label = label
+            
+            frame["object_label"] = best_label
+            
+        except Exception as e:
+            logging.warning(f"Could not process lidar frame: {e}")
+            frame["object_label"] = None
+
+    return lidar_data
+
+def get_report(lidar_data_with_labels: list, current_comark_data) -> None:
+    from collections import Counter
+
+    counts = Counter()
+
+    for frame in lidar_data_with_labels:
+        label = frame.get("object_label", None)
+        # support single label or iterable of labels
+        if isinstance(label, (list, tuple, set)):
+            for l in set(label):
+                counts[l] += 1
         else:
-            unmatched_comark.append((comark_ts_str, "no_match_within_tolerance"))
-    
-    # Check which lidar frames didn't get a vehicle class
-    for frame in lidar_data:
-        if "vehicle_class" not in frame:
-            unmatched_lidar.append(frame["timestamp_ns"])
-    
-    logging.info(f"Matched {matches} frames. {len(unmatched_comark)} comark entries and {len(unmatched_lidar)} lidar frames unmatched.")
-    return matches, unmatched_comark, unmatched_lidar
+            counts[label] += 1
 
+    logging.info(f"Unique labels: {len(counts)}")
+    for lbl, cnt in counts.items():
+        logging.info(f"Label '{lbl}': {cnt} frames")
+    # --- CoMark counts ---
+    comark_counts = Counter()
+    if current_comark_data:
+        for key, val in current_comark_data.items():
+            #label = None
+            # expect value is a list/tuple and label is at index 1 per spec
+            # if isinstance(val, (list, tuple)):
+            #     if len(val) > 1:
+            #         label = val[0]
+            #     elif len(val) == 1:
+            #         label = val[0]
+            # else:
+            label = val[0]
+            # if label is None:
+            #     continue
+            comark_counts[label] += 1
 
-### TODO comark data json in kleineres dict, dann mit timestamp matchen 
+    logging.info(f"CoMark: Unique labels: {len(comark_counts)}")
+    for lbl, cnt in comark_counts.items():
+        logging.info(f"CoMark Label '{lbl}': {cnt} entries")
+def save_to_protobuf(lidar_data_with_labels: list, output_file: str) -> None:
+    # import lidar_data_pb2
+
+    # lidar_dataset = lidar_data_pb2.LidarDataset()
+
+    # for frame in lidar_data_with_labels:
+    #     frame_msg = lidar_dataset.frames.add()
+    #     frame_msg.timestamp_s = frame["timestamp_s"]
+    #     if "object_label" in frame:
+    #         frame_msg.object_label = str(frame["object_label"]) if frame["object_label"] is not None else ""
+    #     for cluster in frame.get("clusters", []):
+    #         cluster_msg = frame_msg.clusters.add()
+    #         cluster_msg.front_x = cluster["front_x"]
+    #         cluster_msg.front_y = cluster["front_y"]
+    #         cluster_msg.front_z = cluster["front_z"]
+    #         cluster_msg.extent_x = cluster["extent_x"]
+    #         cluster_msg.extent_y = cluster["extent_y"]
+    #         cluster_msg.extent_z = cluster["extent_z"]
+
+    # with open(output_file, "wb") as f:
+    #     f.write(lidar_dataset.SerializeToString())
+
+    logging.info(f"Saved LiDAR data with labels to {output_file}")
 def main():
     logging.info("Loading LiDAR data...")
     lidar_data = load_lidar_data()
@@ -423,12 +488,20 @@ def main():
 
     comark_data = load_comark_data()  # function to load comark data if needed
     comark_data_dict=get_neccessary_comark_infos(comark_data)
-    print_comark_data_grouped_by_date(comark_data_dict)
+    #print_comark_data_grouped_by_date(comark_data_dict)
     current_comark_data= cut_comark_data_to_lidar_date(comark_data_dict, lidar_data)
-    
-    print_comark_data_grouped_by_date(current_comark_data)
+    current_comark_data= cut_comark_data_to_lidar_time(current_comark_data, lidar_data)
+
+    #print_comark_data_grouped_by_date(current_comark_data)
         
-    matched_data = match_comark_and_lidar(current_comark_data, lidar_data)
+    lidar_data_with_labels = assign_comark_labels(current_comark_data, lidar_data)
+
+
+
+
+    get_report(lidar_data_with_labels, current_comark_data)
+    
+    save_to_protobuf(lidar_data_with_labels, "lidar_data.pb")
     #print(matched_data)
     
     
@@ -457,11 +530,12 @@ def print_comark_data_grouped_by_date(comark_data_dict):
     
     
     
+#object_class
     
     
     
     
-    
+### AM ENDE ALS PROTOBUFF SPEICHERN 
     
     
     #print(lidar_data)
