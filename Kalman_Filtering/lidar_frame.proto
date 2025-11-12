@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+message Cluster {
+    float front_x = 1;
+    float front_y = 2;
+    float front_z = 3;
+    float extent_x = 4;
+    float extent_y = 5;
+    float extent_z = 6;
+}
+
+message LidarFrame {
+    int64 timestamp_ns = 1;
+    string timestamp_s = 2;
+    repeated Cluster clusters = 3;
+    string object_label = 4;
+}
+
+message LidarDataset {
+    repeated LidarFrame frames = 1;
+}

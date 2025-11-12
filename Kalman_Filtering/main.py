@@ -49,7 +49,7 @@ def load_lidar_data():
     lane_box = create_lane_box(LANE_BOX_DIMS, LANE_BOX_POS)
     lidar_data = []
     for frame_idx, frame in enumerate(read_length_delimited_frames(FRAME_FILE_NEW)):
-            if frame_idx==50: return lidar_data  # for testing purposes, limit to first 10 frames
+            #if frame_idx==100: return lidar_data  # for testing purposes, limit to first 10 frames
             frame_data = {"timestamp_ns": frame.frame_timestamp_ns, "clusters": []}
             for scan in frame.lidars:
                 raw_points = np.frombuffer(scan.pointcloud.cartesian, dtype="<f4").reshape(-1, 3)
@@ -356,12 +356,9 @@ def visualize(lidar_data, N, kalman_tracks):
     
 import datetime
 import logging
-from bisect import bisect_left
-import datetime as dt
 import bisect
-from typing import Dict, List, Any, Tuple
 from datetime import datetime, timedelta
-from bisect import bisect_left
+
 def assign_comark_labels(comark_data: dict, lidar_data: list, offset_ms: int = 200) -> list:
     """
     Assigns comark labels to lidar frames by finding the nearest matching timestamp.
@@ -455,30 +452,99 @@ def get_report(lidar_data_with_labels: list, current_comark_data) -> None:
     logging.info(f"CoMark: Unique labels: {len(comark_counts)}")
     for lbl, cnt in comark_counts.items():
         logging.info(f"CoMark Label '{lbl}': {cnt} entries")
-def save_to_protobuf(lidar_data_with_labels: list, output_file: str) -> None:
-    # import lidar_data_pb2
 
-    # lidar_dataset = lidar_data_pb2.LidarDataset()
+## TODO betterproto verwenden statt google protobuf
+# ...existing code...
+import logging
+from typing import List, Dict, Any
 
-    # for frame in lidar_data_with_labels:
-    #     frame_msg = lidar_dataset.frames.add()
-    #     frame_msg.timestamp_s = frame["timestamp_s"]
-    #     if "object_label" in frame:
-    #         frame_msg.object_label = str(frame["object_label"]) if frame["object_label"] is not None else ""
-    #     for cluster in frame.get("clusters", []):
-    #         cluster_msg = frame_msg.clusters.add()
-    #         cluster_msg.front_x = cluster["front_x"]
-    #         cluster_msg.front_y = cluster["front_y"]
-    #         cluster_msg.front_z = cluster["front_z"]
-    #         cluster_msg.extent_x = cluster["extent_x"]
-    #         cluster_msg.extent_y = cluster["extent_y"]
-    #         cluster_msg.extent_z = cluster["extent_z"]
+# WICHTIG: BetterProto erzeugt z. B. "lidar_frame.py" (nicht *_pb2.py)
+# Passe den Modulnamen an deine Datei an:
+from lidar_frame import LidarDataset, LidarFrame, Cluster
 
-    # with open(output_file, "wb") as f:
-    #     f.write(lidar_dataset.SerializeToString())
+import logging
+from typing import List, Dict, Any
+from lidar_frame import LidarDataset, LidarFrame, Cluster  # BetterProto-Generat
 
-    logging.info(f"Saved LiDAR data with labels to {output_file}")
+def save_to_protobuf(lidar_data_with_labels: List[Dict[str, Any]], output_file: str) -> None:
+    frames: List[LidarFrame] = []
+
+    for frame_dict in lidar_data_with_labels:
+        clusters: List[Cluster] = []
+        for cluster_dict in frame_dict.get("clusters", []) or []:
+            if not cluster_dict:
+                continue
+            clusters.append(
+                Cluster(
+                    front_x=float(cluster_dict.get("front_x", 0.0)),
+                    front_y=float(cluster_dict.get("front_y", 0.0)),
+                    front_z=float(cluster_dict.get("front_z", 0.0)),
+                    extent_x=float(cluster_dict.get("extent_x", 0.0)),
+                    extent_y=float(cluster_dict.get("extent_y", 0.0)),
+                    extent_z=float(cluster_dict.get("extent_z", 0.0)),
+                )
+            )
+
+        obj_label = frame_dict.get("object_label")
+        if isinstance(obj_label, (list, tuple, set)):
+            obj_label_str = ",".join(str(x) for x in obj_label)
+        elif obj_label is None:
+            obj_label_str = ""
+        else:
+            obj_label_str = str(obj_label)
+
+        frames.append(
+            LidarFrame(
+                timestamp_ns=int(frame_dict.get("timestamp_ns", 0)),
+                timestamp_s=str(frame_dict.get("timestamp_s", "")),
+                clusters=clusters,
+                object_label=obj_label_str,
+            )
+        )
+
+    dataset = LidarDataset(frames=frames)
+
+    # WICHTIG: BetterProto-Bytes über bytes(dataset)
+    data = bytes(dataset)
+    with open(output_file, "wb") as f:
+        f.write(data)
+
+    logging.info(f"Saved {len(dataset.frames)} frames to {output_file}")
+
+
+def load_from_protobuf(input_file: str) -> List[Dict[str, Any]]:
+    with open(input_file, "rb") as f:
+        data = f.read()
+
+    # WICHTIG: instanzbasiertes parse()
+    dataset = LidarDataset().parse(data)
+
+    frames_out: List[Dict[str, Any]] = []
+    for pf in dataset.frames:
+        clusters = [
+            {
+                "front_x": c.front_x,
+                "front_y": c.front_y,
+                "front_z": c.front_z,
+                "extent_x": c.extent_x,
+                "extent_y": c.extent_y,
+                "extent_z": c.extent_z,
+            }
+            for c in pf.clusters
+        ]
+        frames_out.append(
+            {
+                "timestamp_ns": pf.timestamp_ns,
+                "timestamp_s": pf.timestamp_s,
+                "clusters": clusters,
+                "object_label": pf.object_label or None,
+            }
+        )
+    return frames_out
+
 def main():
+    ### TODO evaluieren von frames und labels
+    ### TODO verschiedene Objekte (1 frame mit einem reinfahrendem und einem rausfahrendem) gleicher Comark label 
     logging.info("Loading LiDAR data...")
     lidar_data = load_lidar_data()
     lidar_data=convert_unix_timestamp_to_ISO(lidar_data)
@@ -502,6 +568,7 @@ def main():
     get_report(lidar_data_with_labels, current_comark_data)
     
     save_to_protobuf(lidar_data_with_labels, "lidar_data.pb")
+    load_from_protobuf("lidar_data.pb")
     #print(matched_data)
     
     
