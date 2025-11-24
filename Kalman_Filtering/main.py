@@ -121,6 +121,10 @@ def convert_unix_timestamp_to_ISO(lidar_data):
         ts_ns = frame["timestamp_ns"]
         dt = datetime.fromtimestamp(ts_ns / 1e9)
         frame["timestamp_s"] = dt.isoformat()
+        for scan in frame["scan_data"]:
+            pass
+            #for cluster in scan["clusters"]:
+            #    cluster["timestamp_s"] = dt.isoformat()
     return lidar_data
 
 def merge_clusters(clusters, expected_length):
@@ -353,7 +357,7 @@ def visualize(lidar_data, N, kalman_tracks):
     plt.title("Lidar Observations and Kalman Filter Tracking")
     plt.show()
 
-    
+
 import datetime
 import logging
 import bisect
@@ -391,27 +395,28 @@ def assign_comark_labels(comark_data: dict, lidar_data: list, offset_ms: int = 2
 
     # Process each lidar frame
     for frame in lidar_data:
-        if frame['clusters'] is None or len(frame['clusters']) == 0:
-            frame["object_label"] = None
-            continue
-        try:
-            lidar_ts = datetime.fromisoformat(frame["timestamp_s"])
-            
-            # Find closest comark timestamp
-            best_diff = timedelta(days=1)  # Large initial value
-            best_label = None
-            
-            for comark_ts, label in comark_times:
-                diff = abs(lidar_ts - comark_ts)
-                if diff < best_diff:
-                    best_diff = diff
-                    best_label = label
-            
-            frame["object_label"] = best_label
-            
-        except Exception as e:
-            logging.warning(f"Could not process lidar frame: {e}")
-            frame["object_label"] = None
+        for scan in frame.get("scan_data", []):
+            if scan['pointclouds'] is None or len(scan['pointclouds']) == 0:
+                scan["object_label"] = None
+                continue
+            try:
+                lidar_ts = datetime.fromisoformat(scan["timestamp_date"])
+                
+                # Find closest comark timestamp
+                best_diff = timedelta(days=1)  # Large initial value
+                best_label = None
+                
+                for comark_ts, label in comark_times:
+                    diff = abs(lidar_ts - comark_ts)
+                    if diff < best_diff:
+                        best_diff = diff
+                        best_label = label
+                
+                scan["object_label"] = best_label
+                
+            except Exception as e:
+                logging.warning(f"Could not process lidar frame: {e}")
+                frame["object_label"] = None
 
     return lidar_data
 
@@ -453,74 +458,206 @@ def get_report(lidar_data_with_labels: list, current_comark_data) -> None:
     for lbl, cnt in comark_counts.items():
         logging.info(f"CoMark Label '{lbl}': {cnt} entries")
 
-## TODO betterproto verwenden statt google protobuf
-# ...existing code...
-import logging
-from typing import List, Dict, Any
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+def visualize_frames(frames_out: List[Dict[str, Any]], output_dir: str) -> None:
+    """
+    Visualizes LiDAR clusters from loaded protobuf frames.
+    """
+    os.makedirs(output_dir, exist_ok=True)
 
-# WICHTIG: BetterProto erzeugt z. B. "lidar_frame.py" (nicht *_pb2.py)
-# Passe den Modulnamen an deine Datei an:
-from lidar_frame import LidarDataset, LidarFrame, Cluster
+    for i, entry in enumerate(frames_out):
+        pcs = entry.get("pointclouds", [])
+        if not pcs:
+            print(f"Keine Punktwolken in Eintrag {i}, überspringe.")
+            continue
 
-import logging
+        pc = pcs[0]  # erste Punktwolke
+        if isinstance(pc, list):
+            pc = np.array(pc)
+
+        if pc.ndim != 2 or pc.shape[1] != 3:
+            raise ValueError(f"Pointcloud muss Shape (N, 3) haben, hat {pc.shape}")
+
+        x = pc[:, 0]
+        y = pc[:, 1]
+        z = pc[:, 2]
+
+        fig = plt.figure(figsize=(8, 8))
+        ax = fig.add_subplot(111, projection="3d")
+        ax.scatter(x, y, z, s=1)
+
+        # --- Cluster als 3D-Boxen einzeichnen --------------------------------
+        clusters = entry.get("clusters", [])
+        for c in clusters:
+            fx = c["front_x"]
+            fy = c["front_y"]
+            fz = c["front_z"]
+            ex = c["extent_x"]
+            ey = c["extent_y"]
+            ez = c["extent_z"]
+
+            x0, x1 = fx, fx + ex
+            y0, y1 = fy, fy + ey
+            z0, z1 = fz, fz + ez
+
+            # 8 Ecken der Box
+            corners = np.array([
+                [x0, y0, z0],
+                [x1, y0, z0],
+                [x1, y1, z0],
+                [x0, y1, z0],
+                [x0, y0, z1],
+                [x1, y0, z1],
+                [x1, y1, z1],
+                [x0, y1, z1],
+            ])
+
+            # Kanten (Indexpaare in corners)
+            edges = [
+                (0, 1), (1, 2), (2, 3), (3, 0),  # Boden
+                (4, 5), (5, 6), (6, 7), (7, 4),  # Deckel
+                (0, 4), (1, 5), (2, 6), (3, 7),  # vertikal
+            ]
+
+            for i1, i2 in edges:
+                xs = [corners[i1, 0], corners[i2, 0]]
+                ys = [corners[i1, 1], corners[i2, 1]]
+                zs = [corners[i1, 2], corners[i2, 2]]
+                ax.plot(xs, ys, zs)  # keine Farbe gesetzt -> Standardfarbe
+
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.set_zlabel("z")
+
+        try:
+            ax.set_box_aspect((1, 1, 0.5))
+        except AttributeError:
+            pass
+
+        ts = entry.get("timestamp_s", "")
+        oid = entry.get("object_id", "")
+        label = entry.get("object_label", "")
+
+        ax.set_title(f"{ts}\nobject_id: {oid} | label: {label}")
+
+        plt.tight_layout()
+
+        ts_ns = entry.get("timestamp_ns", 0)
+        filename = f"{ts_ns}_id{oid}.png"
+        filepath = os.path.join(output_dir, filename)
+
+        fig.savefig(filepath, dpi=200)
+        plt.close(fig)
+
+        print(f"Gespeichert: {filepath}")
+
 from typing import List, Dict, Any
-from lidar_frame import LidarDataset, LidarFrame, Cluster  # BetterProto-Generat
+import logging
+
+import numpy as np
+
+from lidar_frame import LidarDataset, LidarFrame, Cluster, Pointclouds
+
 
 def save_to_protobuf(lidar_data_with_labels: List[Dict[str, Any]], output_file: str) -> None:
     frames: List[LidarFrame] = []
 
     for frame_dict in lidar_data_with_labels:
-        clusters: List[Cluster] = []
-        for cluster_dict in frame_dict.get("clusters", []) or []:
-            if not cluster_dict:
-                continue
-            clusters.append(
-                Cluster(
-                    front_x=float(cluster_dict.get("front_x", 0.0)),
-                    front_y=float(cluster_dict.get("front_y", 0.0)),
-                    front_z=float(cluster_dict.get("front_z", 0.0)),
-                    extent_x=float(cluster_dict.get("extent_x", 0.0)),
-                    extent_y=float(cluster_dict.get("extent_y", 0.0)),
-                    extent_z=float(cluster_dict.get("extent_z", 0.0)),
+        ts_ns = int(frame_dict.get("timestamp_ns", 0))
+        # timestamp_date -> timestamp_s im Proto
+        ts_s = str(frame_dict.get("timestamp_date", ""))
+
+        for scan in frame_dict.get("scan_data", []):
+            # --------- CLUSTERS ----------------------------------------
+            clusters: List[Cluster] = []
+            for cluster_dict in scan.get("clusters", []) or []:
+                if not cluster_dict:
+                    continue
+                clusters.append(
+                    Cluster(
+                        front_x=float(cluster_dict.get("front_x", 0.0)),
+                        front_y=float(cluster_dict.get("front_y", 0.0)),
+                        front_z=float(cluster_dict.get("front_z", 0.0)),
+                        extent_x=float(cluster_dict.get("extent_x", 0.0)),
+                        extent_y=float(cluster_dict.get("extent_y", 0.0)),
+                        extent_z=float(cluster_dict.get("extent_z", 0.0)),
+                    )
                 )
-            )
 
-        obj_label = frame_dict.get("object_label")
-        if isinstance(obj_label, (list, tuple, set)):
-            obj_label_str = ",".join(str(x) for x in obj_label)
-        elif obj_label is None:
-            obj_label_str = ""
-        else:
-            obj_label_str = str(obj_label)
+            # --------- POINTCLOUDS -------------------------------------
+            pointcloud_messages: List[Pointclouds] = []
 
-        frames.append(
-            LidarFrame(
-                timestamp_ns=int(frame_dict.get("timestamp_ns", 0)),
-                timestamp_s=str(frame_dict.get("timestamp_s", "")),
+            pc_raw = scan.get("pointclouds")
+
+            # Fall 1: Liste mit Arrays [array(...), array(...), ...]
+            if isinstance(pc_raw, list):
+                arrays = [a for a in pc_raw if isinstance(a, np.ndarray)]
+            # Fall 2: direkt ein ndarray
+            elif isinstance(pc_raw, np.ndarray):
+                arrays = [pc_raw]
+            else:
+                arrays = []
+
+            for arr in arrays:
+                if arr.ndim != 2 or arr.shape[1] != 3:
+                    raise ValueError(f"Pointcloud array must have shape (N, 3), got {arr.shape}")
+
+                rows, cols = arr.shape
+                arr32 = arr.astype(np.float32, copy=False)
+                raw_bytes = arr32.tobytes()
+
+                pointcloud_messages.append(
+                    Pointclouds(
+                        raw=raw_bytes,
+                        rows=rows,
+                        cols=cols,
+                    )
+                )
+
+            # --------- LABEL / OBJECT_ID --------------------------------
+            obj_label = scan.get("object_label")
+            if isinstance(obj_label, (list, tuple, set)):
+                obj_label_str = ",".join(str(x) for x in obj_label)
+            elif obj_label is None:
+                obj_label_str = ""
+            else:
+                obj_label_str = str(obj_label)
+
+            object_id = scan.get("object_id")
+            object_id_int = int(object_id[0]) if object_id is not None else 0
+
+            # --------- FRAME (ein Scan = ein LidarFrame) ----------------
+            frame_msg = LidarFrame(
+                timestamp_ns=ts_ns,
+                timestamp_s=ts_s,
                 clusters=clusters,
                 object_label=obj_label_str,
+                pointclouds=pointcloud_messages,
+                object_id=object_id_int,
             )
-        )
+            frames.append(frame_msg)
 
     dataset = LidarDataset(frames=frames)
-
-    # WICHTIG: BetterProto-Bytes über bytes(dataset)
     data = bytes(dataset)
+
     with open(output_file, "wb") as f:
         f.write(data)
 
-    logging.info(f"Saved {len(dataset.frames)} frames to {output_file}")
+    logging.info("Saved %d frames to %s", len(dataset.frames), output_file)
 
 
 def load_from_protobuf(input_file: str) -> List[Dict[str, Any]]:
     with open(input_file, "rb") as f:
         data = f.read()
 
-    # WICHTIG: instanzbasiertes parse()
     dataset = LidarDataset().parse(data)
 
     frames_out: List[Dict[str, Any]] = []
+
     for pf in dataset.frames:
+        # --- Clusters zurück in Dicts --------------------------------------
         clusters = [
             {
                 "front_x": c.front_x,
@@ -532,44 +669,106 @@ def load_from_protobuf(input_file: str) -> List[Dict[str, Any]]:
             }
             for c in pf.clusters
         ]
-        frames_out.append(
-            {
-                "timestamp_ns": pf.timestamp_ns,
-                "timestamp_s": pf.timestamp_s,
-                "clusters": clusters,
-                "object_label": pf.object_label or None,
-            }
-        )
-    return frames_out
 
+        # --- Pointclouds rekonstruieren -----------------------------------
+        pointclouds_list = []
+        for pc in pf.pointclouds:
+            # aus Bytes wieder float32-Array mit richtiger Shape
+            arr = np.frombuffer(pc.raw, dtype=np.float32)
+            arr = arr.reshape(pc.rows, pc.cols)
+            pointclouds_list.append(arr)
+
+        frame_dict: Dict[str, Any] = {
+            "timestamp_ns": pf.timestamp_ns,
+            "timestamp_s": pf.timestamp_s,
+            "clusters": clusters,
+            "pointclouds": pointclouds_list,  # gleiche Struktur wie beim Speichern
+            "object_label": pf.object_label or None,
+            "object_id": pf.object_id,
+        }
+
+        frames_out.append(frame_dict)
+
+    return frames_out
+def load_lidar_data_NEW(input_file=None):
+    lidar_data = []
+    if input_file is None:
+        input_file = FRAME_FILE_NEW
+    for frame in read_length_delimited_frames(input_file):
+        ts_ns = int(frame.frame_timestamp_ns)
+        frame_data = {
+            "timestamp_ns": ts_ns,
+            "timestamp_date": datetime.fromtimestamp(ts_ns / 1e9).isoformat(),
+            "scan_data": [],
+        }
+        
+
+
+
+        for scan in frame.lidars:
+            
+            # Nur bereits detektierte Objekte aus object_list übernehmen
+            if len(scan.object_list) == 0:
+                continue
+
+            for obj in scan.object_list:
+                raw_points = np.frombuffer(obj.pointcloud.cartesian, dtype="<f4").reshape(-1, 3)
+                ts_ns_scan=obj.timestamp_ns
+                scan_data={  
+                    "timestamp_ns": ts_ns_scan,
+                    "timestamp_date": datetime.fromtimestamp(ts_ns_scan / 1e9).isoformat(),
+                    "object_id": [],
+                    "clusters": [],
+                    "pointclouds": [],
+                } 
+                scan_data["clusters"].append(
+                    {
+                        "front_x": obj.position.x,
+                        "front_y": obj.position.y - (obj.dimension.y / 2),
+                        "front_z": obj.position.z,
+                        "extent_x": obj.dimension.x,
+                        "extent_y": obj.dimension.y,
+                        "extent_z": obj.dimension.z,
+                    })
+                scan_data["object_id"].append(obj.id)
+                scan_data["pointclouds"].append(raw_points)
+                frame_data["scan_data"].append(scan_data)
+                
+
+        lidar_data.append(frame_data)
+
+
+    return lidar_data
 def main():
     ### TODO evaluieren von frames und labels
     ### TODO verschiedene Objekte (1 frame mit einem reinfahrendem und einem rausfahrendem) gleicher Comark label 
-    logging.info("Loading LiDAR data...")
-    lidar_data = load_lidar_data()
-    lidar_data=convert_unix_timestamp_to_ISO(lidar_data)
-    T = get_period()
-    N = get_sequence_length()
-    logging.info("Loading Comark data...")
+    # logging.info("Loading LiDAR data...")
+    # lidar_data = load_lidar_data_NEW()
+    # #lidar_data=convert_unix_timestamp_to_ISO(lidar_data)
+    # T = get_period()
+    # N = get_sequence_length()
+    # logging.info("Loading Comark data...")
 
-    comark_data = load_comark_data()  # function to load comark data if needed
-    comark_data_dict=get_neccessary_comark_infos(comark_data)
-    #print_comark_data_grouped_by_date(comark_data_dict)
-    current_comark_data= cut_comark_data_to_lidar_date(comark_data_dict, lidar_data)
-    current_comark_data= cut_comark_data_to_lidar_time(current_comark_data, lidar_data)
+    # comark_data = load_comark_data()  # function to load comark data if needed
+    # comark_data_dict=get_neccessary_comark_infos(comark_data)
+    # #print_comark_data_grouped_by_date(comark_data_dict)
+    # current_comark_data= cut_comark_data_to_lidar_date(comark_data_dict, lidar_data)
+    # current_comark_data= cut_comark_data_to_lidar_time(current_comark_data, lidar_data)
 
-    #print_comark_data_grouped_by_date(current_comark_data)
+    # #print_comark_data_grouped_by_date(current_comark_data)
         
-    lidar_data_with_labels = assign_comark_labels(current_comark_data, lidar_data)
+    # lidar_data_with_labels = assign_comark_labels(current_comark_data, lidar_data)
 
 
 
 
-    get_report(lidar_data_with_labels, current_comark_data)
+    # get_report(lidar_data_with_labels, current_comark_data)
     
-    save_to_protobuf(lidar_data_with_labels, "lidar_data.pb")
-    load_from_protobuf("lidar_data.pb")
-    #print(matched_data)
+    # save_to_protobuf(lidar_data_with_labels, "lidar_data.pb")
+    frames_out = load_from_protobuf("lidar_data.pb")
+    visualize_frames(frames_out, "output_frames")
+    #load_lidar_data_NEW("lidar_data.pb")
+    
     
     
     

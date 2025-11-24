@@ -18,11 +18,20 @@ class Cluster(betterproto.Message):
 
 
 @dataclass
+class Pointclouds(betterproto.Message):
+    raw: bytes = betterproto.bytes_field(1)
+    rows: int = betterproto.int32_field(2)
+    cols: int = betterproto.int32_field(3)
+
+
+@dataclass
 class LidarFrame(betterproto.Message):
     timestamp_ns: int = betterproto.int64_field(1)
     timestamp_s: str = betterproto.string_field(2)
     clusters: List["Cluster"] = betterproto.message_field(3)
     object_label: str = betterproto.string_field(4)
+    pointclouds: List["Pointclouds"] = betterproto.message_field(5)
+    object_id: int = betterproto.int32_field(6)
 
 
 @dataclass

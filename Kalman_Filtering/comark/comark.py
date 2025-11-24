@@ -64,7 +64,7 @@ def cut_comark_data_to_lidar_date(comark_data_dict, lidar_data):
         lidar_data (list): List of lidar data entries with 'date' field
     """
     filtered_comark_data = {}
-    curr_date=lidar_data[0].get("timestamp_s").split('T')[0]
+    curr_date=lidar_data[0].get("timestamp_date").split('T')[0]
 
     for timestamp, labels in comark_data_dict.items():
         temp_timestamp=labels[1]
@@ -84,8 +84,8 @@ def cut_comark_data_to_lidar_time(comark_data_dict, lidar_data):
         lidar_data (list): List of lidar data entries with 'timestamp_s' field
     """
     time_filtered = {}
-    lidar_start_time=lidar_data[0].get("timestamp_s")
-    lidar_end_time=lidar_data[-1].get("timestamp_s")
+    lidar_start_time=lidar_data[0].get("timestamp_date")
+    lidar_end_time=lidar_data[-1].get("timestamp_date")
 
     for timestamp, labels in comark_data_dict.items():
         temp_timestamp=labels[1]

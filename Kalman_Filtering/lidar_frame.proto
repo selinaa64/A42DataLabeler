@@ -9,13 +9,21 @@ message Cluster {
     float extent_z = 6;
 }
 
+message Pointclouds {
+    bytes raw = 1; // Raw byte data for point cloud
+    int32 rows = 2; // Number of rows in the point cloud
+    int32 cols = 3; // Number of columns in the point cloud
+}
+
 message LidarFrame {
-    int64 timestamp_ns = 1;
-    string timestamp_s = 2;
-    repeated Cluster clusters = 3;
-    string object_label = 4;
+    int64 timestamp_ns = 1; // Timestamp in nanoseconds
+    string timestamp_s = 2; // Timestamp as string (ISO format)
+    repeated Cluster clusters = 3; // List of clusters
+    string object_label = 4; // Comma-separated object IDs
+    repeated Pointclouds pointclouds = 5; // List of point clouds
+    int32 object_id = 6;
 }
 
 message LidarDataset {
-    repeated LidarFrame frames = 1;
+    repeated LidarFrame frames = 1; // List of lidar frames
 }
