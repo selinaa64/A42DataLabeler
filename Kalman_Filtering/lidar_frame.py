@@ -32,6 +32,7 @@ class LidarFrame(betterproto.Message):
     object_label: str = betterproto.string_field(4)
     pointclouds: List["Pointclouds"] = betterproto.message_field(5)
     object_id: int = betterproto.int32_field(6)
+    comark_file_name: str = betterproto.string_field(7)
 
 
 @dataclass

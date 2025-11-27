@@ -37,7 +37,7 @@ def get_neccessary_comark_infos(comark_data):
     labels_dict = comark_data.get('labels', {})
     
     # Extract timestamp and labels from each entry
-    for entry_data in labels_dict.values():
+    for idx, entry_data in labels_dict.items():
         if not isinstance(entry_data, dict):
             continue
             
@@ -51,7 +51,7 @@ def get_neccessary_comark_infos(comark_data):
         labels=labels[0].get("type")
         
         if timestamp and labels is not None:
-            transformed[timestamp_unix] = [labels, timestamp]
+            transformed[timestamp_unix] = [labels, timestamp, idx]
             
     return transformed
 

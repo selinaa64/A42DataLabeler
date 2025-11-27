@@ -362,6 +362,8 @@ import datetime
 import logging
 import bisect
 from datetime import datetime, timedelta
+from collections import defaultdict
+from datetime import timedelta
 
 def assign_comark_labels(comark_data: dict, lidar_data: list, offset_ms: int = 200) -> list:
     """
@@ -383,43 +385,97 @@ def assign_comark_labels(comark_data: dict, lidar_data: list, offset_ms: int = 2
     # Convert comark entries to (timestamp + offset, label) pairs
     offset = timedelta(milliseconds=offset_ms)
     comark_times = []
-    for _, (label, ts_str) in comark_data.items():
+    for _, (label, ts_str, filename) in comark_data.items():
         try:
             ts = datetime.fromisoformat(ts_str)
-            comark_times.append((ts + offset, label))
+            comark_times.append((ts + offset, label, filename))
         except Exception:
             continue
 
     # Sort by timestamp for better readability of results
     comark_times.sort(key=lambda x: x[0])
+    obj_groups: dict[Any, List[tuple[dict, datetime | None]]] = defaultdict(list)
 
-    # Process each lidar frame
     for frame in lidar_data:
         for scan in frame.get("scan_data", []):
-            if scan['pointclouds'] is None or len(scan['pointclouds']) == 0:
+            oid = scan.get("object_id")
+            if oid is None:
+                # Scans ohne object_id bekommen kein Label
                 scan["object_label"] = None
                 continue
-            try:
-                lidar_ts = datetime.fromisoformat(scan["timestamp_date"])
-                
-                # Find closest comark timestamp
-                best_diff = timedelta(days=1)  # Large initial value
-                best_label = None
-                
-                for comark_ts, label in comark_times:
-                    diff = abs(lidar_ts - comark_ts)
-                    if diff < best_diff:
-                        best_diff = diff
-                        best_label = label
-                
-                scan["object_label"] = best_label
-                
-            except Exception as e:
-                logging.warning(f"Could not process lidar frame: {e}")
-                frame["object_label"] = None
+
+            lidar_ts = None
+            ts_str = scan.get("timestamp_date")
+            if ts_str is not None:
+                try:
+                    lidar_ts = datetime.fromisoformat(ts_str)
+                except Exception as e:
+                    logging.warning(f"Could not parse lidar timestamp '{ts_str}': {e}")
+
+            obj_groups[oid[0]].append((scan, lidar_ts))
+    # Process each lidar frame
+    # --- 3) Für jede object_id: letzten Scan finden und Label bestimmen ---
+    object_label_map: dict[Any, str | None] = {}
+
+
+    # z.B. oben in der Funktion definieren
+    travel_offset = timedelta(seconds=1.2)
+
+    for oid, scan_list in obj_groups.items():
+        # nur Scans mit gültigem Timestamp verwenden
+        scans_with_ts = [(s, ts) for (s, ts) in scan_list if ts is not None]
+
+        if not scans_with_ts:
+            object_label_map[oid] = None
+            continue
+
+        # letzten Scan (größter Timestamp) bestimmen
+        last_scan, last_ts = max(scans_with_ts, key=lambda st: st[1])
+
+        # nächstgelegenen CoMark-Zeitpunkt zu last_ts finden
+        best_diff = timedelta(days=9999)
+        best_label = None
+        curr_filename = None
+        for comark_ts, label, filename in comark_times:
+            # CoMark-Zeitstempel um 1,2 s in die Zukunft verschieben,
+            # weil das Fahrzeug erst dann beim LiDAR ankommt
+            shifted_comark_ts = comark_ts + travel_offset
+            diff = abs(last_ts - shifted_comark_ts)
+
+            if diff < best_diff:
+                curr_filename = filename
+                best_diff = diff
+                best_label = label
+            # optionaler Abbruch wie gehabt hier möglich
+
+        object_label_map[oid] = [best_label, curr_filename]
+
+    # --- 4) Label auf alle Scans je object_id übertragen ---
+    for oid, scan_list in obj_groups.items():
+        label = object_label_map.get(oid)[0]
+        filename = object_label_map.get(oid)[1]
+        for scan, _ in scan_list:
+            scan["object_label"] = label
+            scan["comark_filename"] = filename
+
+
+    # Optional: Logging, wie viele Scans/Objekte pro Label existieren
+    label_counts: dict[str, int] = defaultdict(int)
+    filename_counts: dict[str, int] = defaultdict(int)
+    for oid, scan_list in obj_groups.items():
+        label = object_label_map.get(oid)[0]
+        filename = object_label_map.get(oid)[1]
+        if label is None:
+            continue
+        label_counts[label] += len(scan_list)
+        filename_counts[filename] += len(scan_list)
+
+    for label, count in label_counts.items():
+        logging.info(f"CoMark Label '{label}': {count} scans")
+    for filename, count in filename_counts.items():
+        logging.info(f"CoMark filename '{filename}': {count} scans")
 
     return lidar_data
-
 def get_report(lidar_data_with_labels: list, current_comark_data) -> None:
     from collections import Counter
 
@@ -461,19 +517,70 @@ def get_report(lidar_data_with_labels: list, current_comark_data) -> None:
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+## TODO Plot bums weiter machen
+
 def visualize_frames(frames_out: List[Dict[str, Any]], output_dir: str) -> None:
     """
     Visualizes LiDAR clusters from loaded protobuf frames.
+    Alle Plots bekommen die gleichen Achsen-Limits.
     """
     os.makedirs(output_dir, exist_ok=True)
 
+    # ---------- 1) Globale Bounds über alle Frames bestimmen ----------
+    xs_all, ys_all, zs_all = [], [], []
+
+    for entry in frames_out:
+        pcs = entry.get("pointclouds", [])
+        if not pcs:
+            continue
+
+        pc = pcs[0]
+        if isinstance(pc, list):
+            pc = np.array(pc)
+
+        if pc.ndim != 2 or pc.shape[1] != 3:
+            continue
+
+        xs_all.append(pc[:, 0])
+        ys_all.append(pc[:, 1])
+        zs_all.append(pc[:, 2])
+
+        # optional: Cluster-Boxen mit einbeziehen, damit die auch sicher im Bereich liegen
+        for c in entry.get("clusters", []):
+            fx = c["front_x"]
+            fy = c["front_y"]
+            fz = c["front_z"]
+            ex = c["extent_x"]
+            ey = c["extent_y"]
+            ez = c["extent_z"]
+
+            xs_all.append(np.array([fx, fx + ex]))
+            ys_all.append(np.array([fy, fy + ey]))
+            zs_all.append(np.array([fz, fz + ez]))
+
+    if not xs_all:
+        # falls gar nichts da ist, irgendeinen Default-Bereich
+        x_min, x_max = -1, 1
+        y_min, y_max = -1, 1
+        z_min, z_max = -1, 1
+    else:
+        xs_all = np.concatenate(xs_all)
+        ys_all = np.concatenate(ys_all)
+        zs_all = np.concatenate(zs_all)
+
+        padding = 0.5  # kleiner Rand drumherum
+        x_min, x_max = xs_all.min() - padding, xs_all.max() + padding
+        y_min, y_max = ys_all.min() - padding, ys_all.max() + padding
+        z_min, z_max = zs_all.min() - padding, zs_all.max() + padding
+
+    # ---------- 2) Frames mit festen Achsen plotten ----------
     for i, entry in enumerate(frames_out):
         pcs = entry.get("pointclouds", [])
         if not pcs:
             print(f"Keine Punktwolken in Eintrag {i}, überspringe.")
             continue
 
-        pc = pcs[0]  # erste Punktwolke
+        pc = pcs[0]
         if isinstance(pc, list):
             pc = np.array(pc)
 
@@ -502,7 +609,6 @@ def visualize_frames(frames_out: List[Dict[str, Any]], output_dir: str) -> None:
             y0, y1 = fy, fy + ey
             z0, z1 = fz, fz + ez
 
-            # 8 Ecken der Box
             corners = np.array([
                 [x0, y0, z0],
                 [x1, y0, z0],
@@ -514,34 +620,38 @@ def visualize_frames(frames_out: List[Dict[str, Any]], output_dir: str) -> None:
                 [x0, y1, z1],
             ])
 
-            # Kanten (Indexpaare in corners)
             edges = [
-                (0, 1), (1, 2), (2, 3), (3, 0),  # Boden
-                (4, 5), (5, 6), (6, 7), (7, 4),  # Deckel
-                (0, 4), (1, 5), (2, 6), (3, 7),  # vertikal
+                (0, 1), (1, 2), (2, 3), (3, 0),
+                (4, 5), (5, 6), (6, 7), (7, 4),
+                (0, 4), (1, 5), (2, 6), (3, 7),
             ]
 
             for i1, i2 in edges:
                 xs = [corners[i1, 0], corners[i2, 0]]
                 ys = [corners[i1, 1], corners[i2, 1]]
                 zs = [corners[i1, 2], corners[i2, 2]]
-                ax.plot(xs, ys, zs)  # keine Farbe gesetzt -> Standardfarbe
+                ax.plot(xs, ys, zs)
 
         ax.set_xlabel("x")
         ax.set_ylabel("y")
         ax.set_zlabel("z")
 
+        # Feste Achsenlimits für alle Plots
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
+        ax.set_zlim(z_min, z_max)
+
+        # Aspect: "echte" Geometrie beibehalten
         try:
-            ax.set_box_aspect((1, 1, 0.5))
+            ax.set_box_aspect((x_max - x_min, y_max - y_min, z_max - z_min))
         except AttributeError:
-            pass
+            pass  # ältere Matplotlib-Version
 
         ts = entry.get("timestamp_s", "")
         oid = entry.get("object_id", "")
         label = entry.get("object_label", "")
 
         ax.set_title(f"{ts}\nobject_id: {oid} | label: {label}")
-
         plt.tight_layout()
 
         ts_ns = entry.get("timestamp_ns", 0)
@@ -627,7 +737,7 @@ def save_to_protobuf(lidar_data_with_labels: List[Dict[str, Any]], output_file: 
 
             object_id = scan.get("object_id")
             object_id_int = int(object_id[0]) if object_id is not None else 0
-
+            file_name = scan.get("comark_filename", "")
             # --------- FRAME (ein Scan = ein LidarFrame) ----------------
             frame_msg = LidarFrame(
                 timestamp_ns=ts_ns,
@@ -636,6 +746,7 @@ def save_to_protobuf(lidar_data_with_labels: List[Dict[str, Any]], output_file: 
                 object_label=obj_label_str,
                 pointclouds=pointcloud_messages,
                 object_id=object_id_int,
+                comark_file_name=file_name,
             )
             frames.append(frame_msg)
 
@@ -685,6 +796,7 @@ def load_from_protobuf(input_file: str) -> List[Dict[str, Any]]:
             "pointclouds": pointclouds_list,  # gleiche Struktur wie beim Speichern
             "object_label": pf.object_label or None,
             "object_id": pf.object_id,
+            "comark_file_name": pf.comark_file_name or None,
         }
 
         frames_out.append(frame_dict)
@@ -701,9 +813,6 @@ def load_lidar_data_NEW(input_file=None):
             "timestamp_date": datetime.fromtimestamp(ts_ns / 1e9).isoformat(),
             "scan_data": [],
         }
-        
-
-
 
         for scan in frame.lidars:
             
@@ -744,7 +853,8 @@ def main():
     ### TODO verschiedene Objekte (1 frame mit einem reinfahrendem und einem rausfahrendem) gleicher Comark label 
     # logging.info("Loading LiDAR data...")
     # lidar_data = load_lidar_data_NEW()
-    # #lidar_data=convert_unix_timestamp_to_ISO(lidar_data)
+    # # visualize_frames(lidar_data, "output_frames")
+    # # #lidar_data=convert_unix_timestamp_to_ISO(lidar_data)
     # T = get_period()
     # N = get_sequence_length()
     # logging.info("Loading Comark data...")
@@ -764,37 +874,143 @@ def main():
 
     # get_report(lidar_data_with_labels, current_comark_data)
     
-    # save_to_protobuf(lidar_data_with_labels, "lidar_data.pb")
+    #save_to_protobuf(lidar_data_with_labels, "lidar_data.pb")
     frames_out = load_from_protobuf("lidar_data.pb")
-    visualize_frames(frames_out, "output_frames")
+    #visualize_frames(frames_out, "output_frames")
     #load_lidar_data_NEW("lidar_data.pb")
-    
-    
-    
-    
-    
-    
-def print_comark_data_grouped_by_date(comark_data_dict):
-    date_counts = {}
-    
-    for timestamp_str in comark_data_dict.keys():
-        # Convert timestamp string to datetime object
-        dt = datetime.datetime.fromisoformat(timestamp_str)
-        # Extract just the date part
-        date = dt.date()
-        
-        # Count occurrences
-        if date in date_counts:
-            date_counts[date] += 1
+    test_vis(frames_out, "output_frames_test")
+
+import os
+from typing import List, Dict, Any
+
+import numpy as np
+import open3d as o3d
+
+import os
+from typing import List, Dict, Any
+
+import numpy as np
+import open3d as o3d
+
+
+BYTES_PER_POINT = 12  # xyz float32
+
+import os
+from typing import List, Dict, Any
+from datetime import datetime
+
+import numpy as np
+import open3d as o3d
+
+BYTES_PER_POINT = 12  # xyz float32
+
+
+def unpack_xyz(pc) -> np.ndarray:
+    if not pc or not getattr(pc, "cartesian", None):
+        return np.zeros((0, 3), dtype=np.float32)
+    n = len(pc.cartesian) // BYTES_PER_POINT
+    return np.frombuffer(pc.cartesian, dtype="<f4").reshape(n, 3)
+
+
+def bbox_to_lineset(bbox) -> o3d.geometry.LineSet:
+    # Proto-Objekt mit position / dimension
+    if hasattr(bbox, "position") and hasattr(bbox, "dimension"):
+        center = [bbox.position.x, bbox.position.y, bbox.position.z]
+        extent = [bbox.dimension.x, bbox.dimension.y, bbox.dimension.z]
+    else:
+        # Dict mit front_x/extent_x
+        fx = bbox["front_x"]
+        fy = bbox["front_y"]
+        fz = bbox["front_z"]
+        ex = bbox["extent_x"]
+        ey = bbox["extent_y"]
+        ez = bbox["extent_z"]
+        center = [fx + ex / 2.0, fy + ey / 2.0, fz + ez / 2.0]
+        extent = [ex, ey, ez]
+
+    obb = o3d.geometry.OrientedBoundingBox(center, np.eye(3), extent)
+    ls = o3d.geometry.LineSet.create_from_oriented_bounding_box(obb)
+    ls.paint_uniform_color([1, 0, 0])
+    return ls
+
+
+def _get_xyz_from_entry(entry: Dict[str, Any]) -> np.ndarray:
+    pcs = entry.get("pointclouds", [])
+    if not pcs:
+        return np.zeros((0, 3), dtype=np.float32)
+
+    pc0 = pcs[0]
+
+    if hasattr(pc0, "cartesian"):
+        return unpack_xyz(pc0)
+
+    if isinstance(pc0, list):
+        pc0 = np.array(pc0, dtype=np.float32)
+    else:
+        pc0 = np.array(pc0, dtype=np.float32)
+
+    if pc0.ndim != 2 or pc0.shape[1] != 3:
+        raise ValueError(f"Pointcloud muss Shape (N, 3) haben, hat {pc0.shape}")
+
+    return pc0
+
+
+def test_vis(frames_out: List[Dict[str, Any]], output_dir: str) -> None:
+    os.makedirs(output_dir, exist_ok=True)
+
+    # ---------- 1) Sortierreihenfolge (object_id, timestamp) vorbereiten ----------
+    meta: list[tuple[Any, datetime, int, Dict[str, Any]]] = []
+
+    for i, entry in enumerate(frames_out):
+        oid = entry.get("object_id")
+        # falls object_id z.B. eine Liste/Tuple ist
+        if isinstance(oid, (list, tuple)):
+            oid_key = oid[0]
         else:
-            date_counts[date] = 1
-            
-    # Print results in a readable format
-    for date, count in date_counts.items():
-        logging.info(f"Date: {date}, Number of entries: {count}")
-    
-    
-    
+            oid_key = oid
+
+        ts_str = entry.get("timestamp_s", "")
+        try:
+            ts = datetime.fromisoformat(ts_str)
+        except Exception:
+            ts = datetime.min  # zur Not ganz nach vorne
+
+        meta.append((oid_key, ts, i, entry))
+
+    # sortieren nach object_id, dann timestamp, dann ursprünglichem Index
+    meta_sorted = sorted(meta, key=lambda x: (x[0], x[1], x[2]))
+
+    # ---------- 2) In dieser Reihenfolge plotten ----------
+    for oid_key, ts_dt, i, entry in meta_sorted:
+        xyz = _get_xyz_from_entry(entry)
+        if xyz.size == 0:
+            print(f"Keine Punktwolke in Eintrag {i}, überspringe.")
+            continue
+
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(xyz)
+        pcd.paint_uniform_color([0.6, 0.6, 0.6])
+
+        overlays = [pcd]
+
+        for bbox in entry.get("clusters", []):
+            try:
+                overlays.append(bbox_to_lineset(bbox))
+            except Exception as e:
+                print(f"Fehler beim Erzeugen der BBox für Eintrag {i}: {e}")
+
+        ts = entry.get("timestamp_s", "")
+        oid = entry.get("object_id", "")
+        label = entry.get("object_label", "")
+        file_name = entry.get("comark_file_name", "")
+
+        print(f"Frame {i}: ts={ts}, object_id={oid}, label={label}, file={file_name}")
+
+        o3d.visualization.draw_geometries(
+            overlays,
+            window_name=f"id={oid} | ts={ts} | label={label} | file={file_name}"
+        )
+
     
 #object_class
     
